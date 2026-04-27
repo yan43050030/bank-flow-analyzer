@@ -1,0 +1,30 @@
+{
+  "name": "High Contrast",
+  "description": "高对比度适老化，大字体清晰可辨",
+  "colors": {
+    "window_bg": "#ffffff",
+    "card_bg": "#ffffff",
+    "card_border": "#000000",
+    "text_primary": "#000000",
+    "text_secondary": "#333333",
+    "text_placeholder": "#666666",
+    "primary": "#0000cc",
+    "primary_hover": "#0000ff",
+    "success": "#006600",
+    "warning": "#cc6600",
+    "danger": "#cc0000",
+    "info": "#333333",
+    "border": "#000000",
+    "table_bg": "#ffffff",
+    "table_alt": "#f8f8f8",
+    "table_hover": "#ffffcc",
+    "header_bg": "#e0e0e0",
+    "highlight_green": "#ccffcc",
+    "highlight_yellow": "#ffff99",
+    "highlight_red": "#ffcccc",
+    "group_title": "#000000",
+    "btn_bg": "#e0e0e0",
+    "btn_hover": "#cccccc",
+    "input_bg": "#ffffff"
+  }
+}

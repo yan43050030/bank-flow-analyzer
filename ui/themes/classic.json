@@ -1,0 +1,30 @@
+{
+  "name": "Classic",
+  "description": "仿银行系统经典风格，沉稳专业",
+  "colors": {
+    "window_bg": "#e8eaf0",
+    "card_bg": "#fcfcfc",
+    "card_border": "#c0c4cc",
+    "text_primary": "#1a1a2e",
+    "text_secondary": "#5a5a7a",
+    "text_placeholder": "#999999",
+    "primary": "#2c5f8a",
+    "primary_hover": "#3d7ab5",
+    "success": "#2d6a4f",
+    "warning": "#b8860b",
+    "danger": "#8b0000",
+    "info": "#5a5a7a",
+    "border": "#b0b4bc",
+    "table_bg": "#fcfcfc",
+    "table_alt": "#f2f3f5",
+    "table_hover": "#e8f0f8",
+    "header_bg": "#dce3ea",
+    "highlight_green": "#e0f0e8",
+    "highlight_yellow": "#fef9e7",
+    "highlight_red": "#fce4e4",
+    "group_title": "#1a1a2e",
+    "btn_bg": "#fcfcfc",
+    "btn_hover": "#e8f0f8",
+    "input_bg": "#ffffff"
+  }
+}

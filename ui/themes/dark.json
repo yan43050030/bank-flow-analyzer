@@ -1,0 +1,30 @@
+{
+  "name": "Dark",
+  "description": "暗色护眼，适合夜间使用",
+  "colors": {
+    "window_bg": "#1a1a2e",
+    "card_bg": "#16213e",
+    "card_border": "#0f3460",
+    "text_primary": "#e0e0e0",
+    "text_secondary": "#a0a0a0",
+    "text_placeholder": "#666666",
+    "primary": "#64b5f6",
+    "primary_hover": "#90caf9",
+    "success": "#81c784",
+    "warning": "#ffb74d",
+    "danger": "#e57373",
+    "info": "#90a4ae",
+    "border": "#2a2a4a",
+    "table_bg": "#16213e",
+    "table_alt": "#1a1a3e",
+    "table_hover": "#1e3a5f",
+    "header_bg": "#0f3460",
+    "highlight_green": "#1b4332",
+    "highlight_yellow": "#3e3520",
+    "highlight_red": "#4a1c1c",
+    "group_title": "#e0e0e0",
+    "btn_bg": "#16213e",
+    "btn_hover": "#1e3a5f",
+    "input_bg": "#0a0a1e"
+  }
+}

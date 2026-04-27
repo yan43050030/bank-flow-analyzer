@@ -1,0 +1,30 @@
+{
+  "name": "Light",
+  "description": "蓝白现代风格，适合日常使用",
+  "colors": {
+    "window_bg": "#f0f2f5",
+    "card_bg": "#ffffff",
+    "card_border": "#e4e7ed",
+    "text_primary": "#303133",
+    "text_secondary": "#909399",
+    "text_placeholder": "#c0c4cc",
+    "primary": "#409EFF",
+    "primary_hover": "#66b1ff",
+    "success": "#67c23a",
+    "warning": "#e6a23c",
+    "danger": "#f56c6c",
+    "info": "#909399",
+    "border": "#dcdfe6",
+    "table_bg": "#ffffff",
+    "table_alt": "#f5f7fa",
+    "table_hover": "#ecf5ff",
+    "header_bg": "#f5f7fa",
+    "highlight_green": "#e8f5e9",
+    "highlight_yellow": "#fff3cd",
+    "highlight_red": "#fde8e8",
+    "group_title": "#303133",
+    "btn_bg": "#ffffff",
+    "btn_hover": "#ecf5ff",
+    "input_bg": "#ffffff"
+  }
+}

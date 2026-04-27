@@ -6,6 +6,7 @@ __pycache__/
 dist/
 build/
 *.egg
+*.spec
 
 # Virtual environments
 venv/
@@ -16,17 +17,17 @@ venv/
 .idea/
 *.swp
 *.swo
+
+# OS
 .DS_Store
+Thumbs.db
 
-# PyInstaller
-*.spec
-!build.spec
-
-# Test data (keep template, not actual data)
+# Test data (sample only)
 # test_bank_flow.csv
 
 # Logs
 *.log
 
-# Mac
-.DS_Store
+# Secrets
+.env
+*.key
