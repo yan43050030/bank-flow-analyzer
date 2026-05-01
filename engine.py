@@ -97,7 +97,9 @@ class CardReport:
     cp_business_count: int = 0
     cp_personal_count: int = 0
     cp_bi_count: int = 0           # 双向对手数
-    cp_hhi: float = 0.0            # 赫芬达尔集中度
+    cp_hhi: float = 0.0            # 赫芬达尔集中度（全部对手）
+    cp_hhi_excl_salary: float = 0.0  # 剔除工资类对手后的 HHI（用于可疑度评分）
+    cp_salary_source_count: int = 0  # 工资类对手数量
     cp_total_players: int = 0      # 对手总数
 
     # ── 可疑度打分 (A5) ──
@@ -252,7 +254,7 @@ class TransactionClassifier:
 class CounterpartyAnalyzer:
     """从交易列表中提取对手统计：Top N / 对公对私 / 双向检测 / 集中度"""
 
-    # 对公关键词
+    # 对公关键词（核心组织名特征）
     _BIZ_KEYWORDS = [
         "公司", "有限", "股份", "厂", "局", "委", "院", "校",
         "中心", "支行", "分理处", "储蓄所", "营业部", "联社",
@@ -268,6 +270,11 @@ class CounterpartyAnalyzer:
         "张三", "李四", "王五",  # 防误判（常见个人名）
     ]
 
+    # 工资类关键词（用于剔除合法集中收入源后再算 HHI）
+    _SALARY_KEYWORDS = [
+        "工资", "薪", "代发", "代付", "奖金", "津贴", "补贴", "报销",
+    ]
+
     @classmethod
     def analyze(cls, transactions: list) -> dict:
         """
@@ -278,34 +285,51 @@ class CounterpartyAnalyzer:
             'business_count': int,
             'personal_count': int,
             'bidirectional_count': int,
-            'hhi': float,
+            'hhi': float,                 # 原始集中度（含工资类）
+            'hhi_excl_salary': float,     # 剔除工资类对手后的集中度（更适合可疑度评分）
+            'salary_source_count': int,   # 工资类对手数量
         }
         """
         if not transactions:
             return {
                 "entries": [], "total_players": 0,
                 "business_count": 0, "personal_count": 0,
-                "bidirectional_count": 0, "hhi": 0.0,
+                "bidirectional_count": 0,
+                "hhi": 0.0, "hhi_excl_salary": 0.0,
+                "salary_source_count": 0,
             }
 
-        cp_map = defaultdict(lambda: {"in": 0.0, "out": 0.0, "count": 0, "account": ""})
+        cp_map = defaultdict(
+            lambda: {"in": 0.0, "out": 0.0, "count": 0, "account": "",
+                     "salary_hits": 0, "non_salary_hits": 0})
         for t in transactions:
             name = (t.counterparty or "").strip()
             if not name:
                 name = "__无对手名称__"
-            key = name
-            cp_map[key]["count"] += 1
-            cp_map[key]["account"] = cp_map[key]["account"] or str(
+            cp_map[name]["count"] += 1
+            cp_map[name]["account"] = cp_map[name]["account"] or str(
                 getattr(t, "counterparty_account", "")) if hasattr(t, "counterparty_account") else ""
-            if t.amount > 0:
-                cp_map[key]["in"] += t.amount
+            # 记录该笔交易是否带"工资类"特征（基于原始交易类型）
+            raw = (t.raw_type or "")
+            if any(kw in raw for kw in cls._SALARY_KEYWORDS):
+                cp_map[name]["salary_hits"] += 1
             else:
-                cp_map[key]["out"] += abs(t.amount)
+                cp_map[name]["non_salary_hits"] += 1
+            if t.amount > 0:
+                cp_map[name]["in"] += t.amount
+            else:
+                cp_map[name]["out"] += abs(t.amount)
 
         entries = []
+        salary_sources = set()
         for name, v in cp_map.items():
             is_biz = cls._is_business(name)
             is_bi = v["in"] > 0.01 and v["out"] > 0.01
+            # 工资类对手：所有交易都是工资 + 仅入账（合法集中来源）
+            if (v["salary_hits"] > 0
+                    and v["non_salary_hits"] == 0
+                    and v["out"] < 0.01):
+                salary_sources.add(name)
             entries.append((
                 name, v["account"],
                 round(v["in"], 2), round(v["out"], 2),
@@ -314,8 +338,17 @@ class CounterpartyAnalyzer:
 
         entries.sort(key=lambda e: e[2] + e[3], reverse=True)
 
+        # 总 HHI
         total_flow = sum(e[2] + e[3] for e in entries)
-        hhi = sum((e[2] + e[3]) ** 2 for e in entries) / (total_flow ** 2) * 10000 if total_flow > 0 else 0
+        hhi = sum((e[2] + e[3]) ** 2 for e in entries) / (total_flow ** 2) * 10000 \
+            if total_flow > 0 else 0
+
+        # 剔除工资类后的 HHI（用于可疑度评分，避免正常工资人群顶格）
+        non_salary_entries = [e for e in entries if e[0] not in salary_sources]
+        ns_total = sum(e[2] + e[3] for e in non_salary_entries)
+        hhi_excl_salary = (
+            sum((e[2] + e[3]) ** 2 for e in non_salary_entries) / (ns_total ** 2) * 10000
+        ) if ns_total > 0 else 0
 
         biz_count = sum(1 for e in entries if e[5])
         bi_count = sum(1 for e in entries if e[6])
@@ -327,6 +360,8 @@ class CounterpartyAnalyzer:
             "personal_count": len(entries) - biz_count,
             "bidirectional_count": bi_count,
             "hhi": round(hhi, 1),
+            "hhi_excl_salary": round(hhi_excl_salary, 1),
+            "salary_source_count": len(salary_sources),
         }
 
     @classmethod
@@ -335,6 +370,10 @@ class CounterpartyAnalyzer:
             if ex in name:
                 return False
         for kw in cls._BIZ_KEYWORDS:
+            if kw in name:
+                return True
+        # P3 修复：复用消费平台/商户关键词，避免美团/支付宝等被误判为"个人"
+        for kw in TransactionClassifier.CONSUME_CP_KEYWORDS:
             if kw in name:
                 return True
         return False
@@ -674,15 +713,18 @@ class CardAnalyzer:
 
         for t in transactions:
             amt = abs(t.amount)
-            # 整数偏好: 49000, 99000, 199000 等
+            # 仅在万元以上、整千/整万金额上判断阈值规避与整数偏好
             if amt >= 10000 and (amt % 10000 == 0 or amt % 1000 == 0):
+                # 阈值规避（独立计数，不被整数偏好的 elif 短路）
+                # 49000 / 199000 这种"踩线"金额必须同时计入 near_50k / near_200k
+                if 45000 <= amt <= 51000:
+                    near_50k += 1
+                elif 190000 <= amt <= 210000:
+                    near_200k += 1
+                # 整数偏好（命中明显规避特征数字 +1，靠近阈值 +0.5）
                 if amt in (49000, 99000, 199000, 490000, 990000):
                     int_pref += 1
-                elif amt >= 45000 and amt <= 51000:
-                    near_50k += 1
-                    int_pref += 0.5
-                elif amt >= 190000 and amt <= 210000:
-                    near_200k += 1
+                elif (45000 <= amt <= 51000) or (190000 <= amt <= 210000):
                     int_pref += 0.5
             # 深夜交易
             hour = t.date.hour
@@ -694,6 +736,10 @@ class CardAnalyzer:
 
         night_ratio = night_txn / total_txn if total_txn > 0 else 0
         weekend_ratio = weekend_txn / total_txn if total_txn > 0 else 0
+
+        # 时间数据有效性：若超过半数交易的 hour=0，认为数据只有日期，深夜分不可信
+        zero_hour = sum(1 for t in transactions if t.date.hour == 0)
+        has_reliable_time = total_txn > 0 and (zero_hour / total_txn) < 0.5
 
         # ── A5: 可疑度打分 ──
         score = 0.0
@@ -708,15 +754,26 @@ class CardAnalyzer:
         score += th_score; detail["阈值规避"] = round(th_score, 1)
 
         # 3. 深夜交易 (15分)
-        nt_score = min(15, night_ratio * 100)
+        # 仅在时间数据可信时评分（很多银行流水只有日期无具体时间，会让所有交易=00:00）
+        if has_reliable_time:
+            nt_score = min(15, night_ratio * 100)
+        else:
+            nt_score = 0
         score += nt_score; detail["深夜交易"] = round(nt_score, 1)
 
         # 4. 双向对手 (15分): 双向对手多 → 疑似过账
         bi_score = min(15, report.cp_bi_count * 3)
         score += bi_score; detail["双向对手"] = round(bi_score, 1)
 
-        # 5. 集中度 (15分): HHI > 2500 → 高度集中
-        hhi_score = min(15, (report.cp_hhi / 2500) * 15) if report.cp_hhi > 0 else 0
+        # 5. 集中度 (15分): 用剔除工资类后的 HHI，避免正常工资人群顶格
+        # - 非工资对手 < 5 时不评分（数据太少不可靠）
+        # - HHI 5000-10000 区间映射到 0-15 分（>10000 满分）
+        non_salary_players = report.cp_total_players - report.cp_salary_source_count
+        hhi_for_score = report.cp_hhi_excl_salary
+        if non_salary_players >= 5 and hhi_for_score > 0:
+            hhi_score = min(15, max(0, (hhi_for_score - 5000) / 5000 * 15))
+        else:
+            hhi_score = 0
         score += hhi_score; detail["对手集中度"] = round(hhi_score, 1)
 
         # 6. 消费/收入比异常 (15分): 消费远超收入
@@ -758,12 +815,15 @@ class CardAnalyzer:
         report.cp_personal_count = cp["personal_count"]
         report.cp_bi_count = cp["bidirectional_count"]
         report.cp_hhi = cp["hhi"]
+        report.cp_hhi_excl_salary = cp["hhi_excl_salary"]
+        report.cp_salary_source_count = cp["salary_source_count"]
         report.cp_total_players = cp["total_players"]
 
         report.log(f"\n--- 对手分析 ---")
         report.log(f"  对手总数: {cp['total_players']} (对公{cp['business_count']} / 个人{cp['personal_count']})")
         report.log(f"  双向对手: {cp['bidirectional_count']}个")
-        report.log(f"  集中度HHI: {cp['hhi']:.0f} (<1000分散 / >2500集中)")
+        report.log(f"  工资类对手: {cp['salary_source_count']}个")
+        report.log(f"  集中度HHI: {cp['hhi']:.0f} (剔工资后{cp['hhi_excl_salary']:.0f})")
         for e in entries[:10]:
             tag = ""
             if e[5]: tag += "对公"

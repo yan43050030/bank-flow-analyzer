@@ -1,5 +1,33 @@
 # Changelog
 
+## [2.3.0] - 2026-05-01
+
+### 新增（ROADMAP A 组完成）
+- **A1 对手分析**：Top N（金额/笔数/净流向）、对公对私分类、双向对手检测、HHI 集中度
+- **A2-min 现金画像**：整数偏好、5万/20万阈值规避、深夜/周末交易统计
+- **A5 可疑度打分**：0-100 分综合评分 → 🟢 低 / 🟡 中 / 🔴 高 三级分类
+
+### 修复
+- **P1 阈值规避评分 elif 短路 bug**：49000/199000 等踩线金额原本被"整数偏好"硬编码列短路，不再计入 near_50k/near_200k 计数。改成两个计数器独立累加，使最关键的反洗钱阈值规避信号能正确捕获
+- **P2 HHI 顶格问题**：
+  - 新增 `hhi_excl_salary`（剔除工资类对手后的集中度），用于可疑度评分避免正常工资人群顶格
+  - 阈值从 2500 上调到 5000-10000 区间映射，更符合"集中度异常"的实际门槛
+  - 新增"非工资对手 ≥5"门槛，数据太少时不评 HHI 分
+- **P3 对公识别漏品牌名**：`CounterpartyAnalyzer._is_business` 复用 `TransactionClassifier.CONSUME_CP_KEYWORDS`，美团/支付宝/淘宝/京东/拼多多等品牌名不再被误判为"个人"
+- **深夜交易评分对低质量数据的鲁棒性**：当 ≥50% 交易的 hour=0（数据只有日期没有具体时间）时，跳过深夜评分项，避免误判
+
+### 测试
+- 新增 5 个测试场景（test_scenario_9 ~ 13）：对手分析、品牌识别、阈值规避、正常用户、高可疑场景
+- 测试覆盖：正常用户 0 分 🟢 / 高可疑 60+ 分 🔴 区分清晰
+
+### 数据模型
+- `CardReport` 新增字段：`cp_top_amount`, `cp_top_count`, `cp_top_net`, `cp_business_count`, `cp_personal_count`, `cp_bi_count`, `cp_hhi`, `cp_hhi_excl_salary`, `cp_salary_source_count`, `cp_total_players`, `suspicion_score`, `suspicion_label`, `suspicion_detail`
+
+### UI 变化
+- 单卡 Tab 新增「对手分析」子页（Top 10 对手 / 对公对私标签 / 双向对手标黄）
+- 单卡顶部卡片新增「对手」「可疑度」概览
+- 汇总表新增「对手数 / ⇄双向 / HHI / 可疑度」列
+
 ## [2.2.0] - 2026-05-01
 
 ### 重大变更

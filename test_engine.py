@@ -208,6 +208,147 @@ def test_scenario_8_deposit_then_transfer():
     print("✅ 测试8通过")
 
 
+def test_scenario_9_counterparty_basic():
+    """A1 对手分析：双向检测 + 对公识别 + HHI"""
+    print("\n" + "=" * 60)
+    print("测试9: 对手分析（双向/对公/HHI）")
+    print("=" * 60)
+
+    txs = [
+        make_tx("2024-01-01", "6222", "工资", 10000, cp="某某科技有限公司"),
+        make_tx("2024-01-03", "6222", "转账", 5000, cp="李四"),
+        make_tx("2024-01-04", "6222", "转账", -3000, cp="李四"),  # 双向
+        make_tx("2024-01-05", "6222", "转账", -2000, cp="王五"),
+    ]
+    r = analyze_bank_flow(txs).reports[0]
+
+    print(f"对手总数: {r.cp_total_players} (期望 3)")
+    print(f"双向对手: {r.cp_bi_count} (期望 1)")
+    print(f"对公: {r.cp_business_count} (期望 1)")
+    print(f"HHI: {r.cp_hhi:.0f} | 剔工资 HHI: {r.cp_hhi_excl_salary:.0f}")
+    print(f"工资类对手: {r.cp_salary_source_count} (期望 1: 公司)")
+
+    assert r.cp_total_players == 3
+    assert r.cp_bi_count == 1, f"双向应为1: {r.cp_bi_count}"
+    assert r.cp_business_count == 1
+    assert r.cp_salary_source_count == 1, f"工资类应为1: {r.cp_salary_source_count}"
+    print("✅ 测试9通过")
+
+
+def test_scenario_10_brand_is_business():
+    """P3: 美团/支付宝/淘宝等品牌名应识别为对公"""
+    print("\n" + "=" * 60)
+    print("测试10: 消费品牌名识别为对公（P3 修复）")
+    print("=" * 60)
+
+    txs = [
+        make_tx("2024-01-01", "6222", "消费", -100, cp="美团"),
+        make_tx("2024-01-02", "6222", "消费", -200, cp="支付宝"),
+        make_tx("2024-01-03", "6222", "消费", -300, cp="淘宝"),
+        make_tx("2024-01-04", "6222", "转账", -500, cp="李四"),
+    ]
+    r = analyze_bank_flow(txs).reports[0]
+
+    print(f"对公: {r.cp_business_count} (期望 3: 美团/支付宝/淘宝)")
+    print(f"个人: {r.cp_personal_count} (期望 1: 李四)")
+
+    assert r.cp_business_count == 3, f"对公应为3: {r.cp_business_count}"
+    assert r.cp_personal_count == 1
+    print("✅ 测试10通过")
+
+
+def test_scenario_11_threshold_avoidance():
+    """P1: 49000/199000 应同时计入 整数偏好 + 阈值规避"""
+    print("\n" + "=" * 60)
+    print("测试11: 阈值规避评分（P1 修复 elif 短路）")
+    print("=" * 60)
+
+    # 6 笔阈值规避典型金额
+    txs = [
+        make_tx("2024-01-01", "6222", "存款", 49000),
+        make_tx("2024-01-02", "6222", "存款", 49000),
+        make_tx("2024-01-03", "6222", "存款", 49000),
+        make_tx("2024-01-04", "6222", "存款", 199000),
+        make_tx("2024-01-05", "6222", "存款", 199000),
+        make_tx("2024-01-06", "6222", "取款", -199000),
+    ]
+    r = analyze_bank_flow(txs).reports[0]
+
+    print(f"可疑度: {r.suspicion_score:.0f} {r.suspicion_label}")
+    print(f"明细: {r.suspicion_detail}")
+    print(f"  - 整数偏好: {r.suspicion_detail.get('整数偏好', 0):.0f}/20")
+    print(f"  - 阈值规避: {r.suspicion_detail.get('阈值规避', 0):.0f}/20")
+
+    # 修复前阈值规避会是 0；修复后应有显著得分（near_50k=3, near_200k=3）
+    assert r.suspicion_detail.get("阈值规避", 0) >= 16, \
+        f"阈值规避得分太低: {r.suspicion_detail.get('阈值规避', 0)}"
+    # 整数偏好也应满分（6 笔×3 = 18 → 顶格 20）
+    assert r.suspicion_detail.get("整数偏好", 0) >= 18, \
+        f"整数偏好得分: {r.suspicion_detail.get('整数偏好', 0)}"
+    print("✅ 测试11通过")
+
+
+def test_scenario_12_normal_user_low_suspicion():
+    """P2: 正常工资+消费用户不应因 HHI 顶格而误判"""
+    print("\n" + "=" * 60)
+    print("测试12: 正常用户可疑度（P2 修复 HHI 评分）")
+    print("=" * 60)
+
+    txs = [
+        make_tx("2024-01-15", "6222", "工资", 8000, cp="某某公司"),
+        make_tx("2024-01-16", "6222", "消费", -300, cp="美团"),
+        make_tx("2024-01-18", "6222", "消费", -150, cp="超市"),
+        make_tx("2024-01-20", "6222", "消费", -2000, cp="百货"),
+        make_tx("2024-02-15", "6222", "工资", 8000, cp="某某公司"),
+        make_tx("2024-02-16", "6222", "消费", -350, cp="美团"),
+    ]
+    r = analyze_bank_flow(txs).reports[0]
+
+    print(f"可疑度: {r.suspicion_score:.0f} {r.suspicion_label}")
+    print(f"明细: {r.suspicion_detail}")
+    print(f"剔除工资 HHI: {r.cp_hhi_excl_salary:.0f}")
+    print(f"非工资对手数: {r.cp_total_players - r.cp_salary_source_count}")
+
+    # 正常用户：HHI 项应为 0（非工资对手 < 5）
+    assert r.suspicion_detail.get("对手集中度", 0) == 0, \
+        f"正常用户 HHI 不应得分: {r.suspicion_detail.get('对手集中度', 0)}"
+    # 总分应为低
+    assert r.suspicion_score <= 15, f"正常用户可疑度过高: {r.suspicion_score}"
+    print("✅ 测试12通过")
+
+
+def test_scenario_13_high_suspicion_full():
+    """高可疑场景综合：阈值规避 + 深夜 + 双向过账 + 集中度 → 应为🔴高"""
+    print("\n" + "=" * 60)
+    print("测试13: 高可疑场景综合识别")
+    print("=" * 60)
+
+    from datetime import datetime
+    def mk(date_h, raw, amt, cp=""):
+        return Transaction(
+            date=datetime.strptime(date_h, "%Y-%m-%d %H:%M"),
+            card="6222", name="嫌疑人", raw_type=raw, amount=amt, counterparty=cp)
+
+    txs = [
+        mk("2024-01-01 23:30", "存款", 49000),
+        mk("2024-01-02 23:45", "存款", 49000),
+        mk("2024-01-03 02:15", "存款", 49000),
+        mk("2024-01-05 23:00", "存款", 199000),
+        mk("2024-01-06 22:30", "取款", -199000),
+        mk("2024-01-07 14:00", "转账", -50000, cp="某某代持"),
+        mk("2024-01-08 14:00", "转账", 50000, cp="某某代持"),
+        mk("2024-01-09 14:00", "转账", -50000, cp="某某代持"),
+    ]
+    r = analyze_bank_flow(txs).reports[0]
+
+    print(f"可疑度: {r.suspicion_score:.0f} {r.suspicion_label}")
+    print(f"明细: {r.suspicion_detail}")
+
+    assert r.suspicion_score >= 60, f"高可疑应≥60: {r.suspicion_score}"
+    assert "高" in r.suspicion_label
+    print("✅ 测试13通过")
+
+
 if __name__ == "__main__":
     test_scenario_1()
     test_scenario_2()
@@ -217,5 +358,10 @@ if __name__ == "__main__":
     test_scenario_6_cash_to_finance()
     test_scenario_7_same_counterparty_loop()
     test_scenario_8_deposit_then_transfer()
+    test_scenario_9_counterparty_basic()
+    test_scenario_10_brand_is_business()
+    test_scenario_11_threshold_avoidance()
+    test_scenario_12_normal_user_low_suspicion()
+    test_scenario_13_high_suspicion_full()
     print("\n" + "=" * 60)
     print("🎉 所有测试完成")
