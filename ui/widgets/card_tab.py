@@ -105,6 +105,22 @@ class CardTab(QWidget):
         tv.addWidget(self._tenure_table)
         self._sub_tabs.addTab(tenure_page, "📅 任职对比")
 
+        # ── 子 Tab 5: 代持分析 ──
+        nominee_page = QWidget()
+        nv = QVBoxLayout(nominee_page)
+        nv.setContentsMargins(0, 0, 0, 0)
+        self._nominee_info = QLabel()
+        self._nominee_info.setStyleSheet("font-size:12px; padding:4px;")
+        nv.addWidget(self._nominee_info)
+        self._nominee_table = QTableWidget()
+        self._nominee_table.setAlternatingRowColors(True)
+        self._nominee_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._nominee_table.setColumnCount(3)
+        self._nominee_table.setHorizontalHeaderLabels(["代持信号", "得分", "说明"])
+        self._nominee_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        nv.addWidget(self._nominee_table)
+        self._sub_tabs.addTab(nominee_page, "🔍 代持分析")
+
     def load(self, report: CardReport):
         """加载单卡报告"""
         self._steps.setText("\n".join(report.steps))
@@ -112,6 +128,7 @@ class CardTab(QWidget):
         self._build_cp_table(report)
         self._build_consume_table(report)
         self._build_tenure_table(report)
+        self._build_nominee_table(report)
 
     # ── 统计明细 ──────────────────────────────────────
 
@@ -260,3 +277,35 @@ class CardTab(QWidget):
                     from PySide6.QtGui import QColor
                     item.setBackground(QColor("#FFF3CD"))
                 self._tenure_table.setItem(i, j, item)
+
+    # ── 代持分析 (C1) ──────────────────────────────────
+
+    def _build_nominee_table(self, r: CardReport):
+        signals = r.nominee_signals
+        if not signals:
+            self._nominee_info.setText("代持分析数据不可用")
+            self._nominee_table.setRowCount(0)
+            return
+
+        cls = ("高度疑似代持卡" if "高" in r.nominee_label
+               else "疑似代持卡" if "疑似" in r.nominee_label
+               else "正常使用")
+        ben = f" | 疑似受益人: {r.nominee_beneficiary}" if r.nominee_beneficiary else ""
+        self._nominee_info.setText(
+            f"代持评分: {r.nominee_score:.0f}/100 — {r.nominee_label} ({cls}){ben}"
+        )
+
+        descriptions = {
+            "S5-过账模式": "非消费流出占比越高，越像纯过账卡（只收工资→取现/转出，无个人消费）",
+            "S6-单一受益人": "转出资金越集中于一个对手，越像为特定人代持",
+            "收入模式": "收入中工资类占比越高，越像代发工资后取现的过账模式",
+            "消费缺位": "缺少微信/支付宝/美团等日常消费对手，无个人生活痕迹",
+        }
+        sigs = sorted(signals.items())
+        self._nominee_table.setRowCount(len(sigs))
+        for i, (k, v) in enumerate(sigs):
+            desc = descriptions.get(k, "")
+            for j, val in enumerate([k, f"{v:.0f}/0", desc]):
+                item = QTableWidgetItem(val)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self._nominee_table.setItem(i, j, item)

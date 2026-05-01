@@ -23,6 +23,8 @@ class LeftPanel(QWidget):
     data_loaded = Signal(object, str)
     # 执行分析信号: (mappings_dict, params_dict, suspicion_config_dict)
     run_requested = Signal(dict, dict, dict)
+    # 报告导出信号
+    report_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -48,6 +50,10 @@ class LeftPanel(QWidget):
         self.btn_export = QPushButton("💾 导出结果 (xlsx)")
         self.btn_export.setEnabled(False)
         f.addWidget(self.btn_export)
+        self.btn_report = QPushButton("📄 导出证据报告 (HTML)")
+        self.btn_report.setEnabled(False)
+        self.btn_report.clicked.connect(self._on_export_report)
+        f.addWidget(self.btn_report)
         lv.addWidget(g1)
 
         # ── 字段映射 ──
@@ -207,9 +213,13 @@ class LeftPanel(QWidget):
         }
         self.run_requested.emit(mappings, params, config)
 
+    def _on_export_report(self):
+        self.report_requested.emit()
+
     # ── 外部可设置 ────────────────────────────────────
     def set_export_enabled(self, enabled: bool):
         self.btn_export.setEnabled(enabled)
+        self.btn_report.setEnabled(enabled)
 
     @property
     def export_btn(self):

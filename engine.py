@@ -113,6 +113,12 @@ class CardReport:
     tenure_after: dict = field(default_factory=dict)
     has_tenure: bool = False
 
+    # ── 代持卡识别 (C1) ──
+    nominee_score: float = 0.0       # 代持嫌疑分 0-100
+    nominee_label: str = ""          # 低/中/高
+    nominee_signals: dict = field(default_factory=dict)  # 各信号详情
+    nominee_beneficiary: str = ""    # 疑似受益人
+
     # ── 消费画像 (A4) ──
     consume_luxury_count: int = 0          # 高端消费笔数
     consume_luxury_total: float = 0.0      # 高端消费总额
@@ -847,6 +853,9 @@ class CardAnalyzer:
         if tenure_start and tenure_end:
             self._analyze_tenure(report, transactions, tenure_start, tenure_end)
 
+        # === Step 11: 代持卡识别 (C1) ===
+        self._analyze_nominee(report, transactions)
+
         return report
 
     def _analyze_tenure(self, report: CardReport, transactions: list,
@@ -888,6 +897,76 @@ class CardAnalyzer:
             report.log(f"  {label}: {data['笔数']}笔 资金量{data['资金量']:,.0f} "
                        f"月均{data['月均']:,.0f} 消费{data['消费']:,.0f} "
                        f"大额{data['大额(≥5万)']}笔 深夜{data['深夜%']}%")
+
+    def _analyze_nominee(self, report: CardReport, transactions: list):
+        """C1 代持卡识别: S5 无消费模式 + S6 单一受益人"""
+        if not transactions:
+            return
+
+        # ── S5: 非消费占比（仅工资+取现+转出，无主动消费）──
+        outflows = [t for t in transactions if t.amount < 0]
+        total_out = sum(abs(t.amount) for t in outflows) if outflows else 0
+        non_consume_out = sum(abs(t.amount) for t in outflows
+                              if t.category != "consume") if outflows else 0
+        non_consume_ratio = non_consume_out / total_out if total_out > 0 else 1.0
+
+        # ── S6: 转出受益人集中度 ──
+        transfer_outs = [t for t in transactions
+                         if t.category == "transfer_out"]
+        beneficiary_map = defaultdict(float)
+        for t in transfer_outs:
+            cp = (t.counterparty or "").strip()
+            if cp: beneficiary_map[cp] += abs(t.amount)
+        sorted_bens = sorted(beneficiary_map.items(), key=lambda x: x[1], reverse=True)
+        top1_share = sorted_bens[0][1] / sum(v for _, v in sorted_bens) if sorted_bens else 0
+        top_beneficiary = sorted_bens[0][0] if sorted_bens else ""
+
+        # ── 代持打分 ──
+        score = 0.0
+        sig = {}
+        # S5 (30分): 非消费流出占比 > 90% → 满分
+        s5_score = min(30, non_consume_ratio * 30)
+        score += s5_score; sig["S5-过账模式"] = round(s5_score, 1)
+        # S6 (30分): 单一受益人 > 80% → 满分
+        s6_score = min(30, top1_share * 30 / 0.8) if sorted_bens else 0
+        score += s6_score; sig["S6-单一受益人"] = round(s6_score, 1)
+        # 收入模式 (20分): 仅有"工资类"转入 → 代持特征
+        income_txs = [t for t in transactions if t.amount > 0]
+        salary_income = sum(t.amount for t in income_txs
+                           if any(kw in (t.raw_type + t.counterparty)
+                                  for kw in ["工资", "薪金", "奖金", "劳务", "代付", "自定义"]))
+        total_income_amt = sum(t.amount for t in income_txs) if income_txs else 0
+        salary_ratio = salary_income / total_income_amt if total_income_amt > 0 else 0
+        inc_score = min(20, salary_ratio * 20)
+        score += inc_score; sig["收入模式"] = round(inc_score, 1)
+        # 消费缺位 (20分): 没有日常消费对手（微信/支付宝/美团等）
+        consume_cps = defaultdict(float)
+        for t in transactions:
+            if t.category == "consume" and t.counterparty:
+                consume_cps[t.counterparty.strip()] += abs(t.amount)
+        daily_cp_count = sum(1 for cp in consume_cps
+                            if any(kw in cp for kw in ["微信", "支付宝", "财付通", "美团", "饿了么"]))
+        no_daily = 20 if daily_cp_count == 0 else max(0, 20 - daily_cp_count * 5)
+        score += no_daily; sig["消费缺位"] = round(no_daily, 1)
+
+        score = min(100, round(score, 1))
+        report.nominee_score = score
+        report.nominee_signals = sig
+        report.nominee_beneficiary = top_beneficiary
+
+        if score <= 30:
+            report.nominee_label = "🟢 正常"
+        elif score <= 60:
+            report.nominee_label = "🟡 疑似代持"
+        else:
+            report.nominee_label = "🔴 高度疑似"
+
+        report.log(f"\n--- 代持卡识别 (C1) ---")
+        report.log(f"  S5过账模式: {non_consume_ratio:.0%} 非消费流出 ({s5_score:.0f}/30)")
+        report.log(f"  S6单一受益人: {top_beneficiary[:30]}({top1_share:.0%}) ({s6_score:.0f}/30)")
+        report.log(f"  收入模式: {salary_ratio:.0%} 工资类 ({inc_score:.0f}/20)")
+        report.log(f"  消费缺位: 日常消费对手{daily_cp_count}个 ({no_daily:.0f}/20)")
+        report.log(f"  代持评分: {score:.0f}/100 → {report.nominee_label}")
 
     def _analyze_consumption(self, report: CardReport, transactions: list):
         """A4 消费画像: 高端品牌检测 + 多级分类"""
@@ -1259,3 +1338,99 @@ def analyze_bank_flow(transactions: List[Transaction],
         result.summary_steps.extend(report.steps)
 
     return result
+
+
+# ═══════════════════════════════════════════════════════════
+# 证据包导出 (C2)
+# ═══════════════════════════════════════════════════════════
+
+def generate_report(report: CardReport, title: str = "银行流水分析报告") -> str:
+    """生成单卡 HTML 证据报告"""
+    r = report
+    lines = []
+    w = lines.append
+
+    w("<!DOCTYPE html><html><head><meta charset='utf-8'>")
+    w(f"<title>{title} — {r.card[-16:]}</title>")
+    w("<style>")
+    w("body{font-family:'Microsoft YaHei',sans-serif;max-width:960px;margin:0 auto;padding:20px;color:#333}")
+    w("h1{color:#1a73e8;border-bottom:2px solid #1a73e8;padding-bottom:8px}")
+    w("h2{color:#333;margin-top:24px;border-left:4px solid #1a73e8;padding-left:12px}")
+    w(".card{background:#f8f9fa;border-radius:8px;padding:12px 16px;margin:8px 0}")
+    w(".warn{background:#fff3cd;border-left:4px solid #ffc107}")
+    w(".danger{background:#ffe0e0;border-left:4px solid #dc3545}")
+    w("table{width:100%;border-collapse:collapse;margin:12px 0}")
+    w("th{background:#1a73e8;color:#fff;padding:8px 10px;text-align:left}")
+    w("td{padding:8px 10px;border-bottom:1px solid #e0e0e0}")
+    w("tr:nth-child(even){background:#f8f9fa}")
+    w(".score{font-size:24px;font-weight:bold}")
+    w(".red{color:#dc3545}.yellow{color:#ffc107}.green{color:#28a745}")
+    w(".tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;margin:2px}")
+    w(".tag-biz{background:#e3f2fd;color:#1565c0}.tag-bi{background:#fff3cd;color:#e65100}")
+    w("</style></head><body>")
+
+    w(f"<h1>{title}</h1>")
+    w(f"<p>卡号: {r.card} | 姓名: {r.name} | 交易笔数: {r.total_records}</p>")
+
+    w("<h2>📊 资金概览</h2><div class='card'>")
+    w(f"<p><b>资金量:</b> <span class='score'>{r.fund_size:,.0f} 元</span></p>")
+    w(f"<p>峰值: {r.peak_funds:,.0f} | 余额: {r.balance:,.0f} | "
+      f"入: {r.total_income:,.0f} | 出: {r.total_expense:,.0f}</p>")
+    w(f"<p>消费: {r.consume_total:,.0f} | 转出: {r.transfer_out:,.0f}</p>")
+    w("</div>")
+
+    cls = "red" if "高" in r.suspicion_label else ("yellow" if "中" in r.suspicion_label else "green")
+    w(f"<h2>⚠ 可疑度</h2><div class='card warn'>")
+    w(f"<p><span class='score {cls}'>{r.suspicion_score:.0f}/100 — {r.suspicion_label}</span></p>")
+    w("<table><tr><th>指标</th><th>得分</th></tr>")
+    for k, v in r.suspicion_detail.items():
+        w(f"<tr><td>{k}</td><td>{v:.0f}</td></tr>")
+    w("</table></div>")
+
+    if r.nominee_score > 0:
+        cls2 = "red" if "高" in r.nominee_label else ("yellow" if "疑似" in r.nominee_label else "green")
+        w(f"<h2>🔍 代持分析</h2><div class='card danger'>")
+        w(f"<p><span class='score {cls2}'>{r.nominee_score:.0f}/100 — {r.nominee_label}</span></p>")
+        if r.nominee_beneficiary:
+            w(f"<p>疑似受益人: <b>{r.nominee_beneficiary}</b></p>")
+        w("<table><tr><th>信号</th><th>得分</th></tr>")
+        for k, v in r.nominee_signals.items():
+            w(f"<tr><td>{k}</td><td>{v:.0f}</td></tr>")
+        w("</table></div>")
+
+    w("<h2>👥 主要对手 Top 10</h2>")
+    w("<table><tr><th>#</th><th>对手</th><th>流入</th><th>流出</th><th>净额</th><th>笔数</th><th>标签</th></tr>")
+    for i, e in enumerate(r.cp_top_amount[:10]):
+        name, _, ins, outs, cnt, is_biz, is_bi = e
+        tags = " ".join([f"<span class='tag tag-biz'>对公</span>" if is_biz else "",
+                         f"<span class='tag tag-bi'>⇄双向</span>" if is_bi else ""])
+        w(f"<tr><td>{i+1}</td><td>{name[:40]}</td><td>{ins:,.0f}</td>"
+          f"<td>{outs:,.0f}</td><td>{ins-outs:+,.0f}</td><td>{cnt}</td><td>{tags}</td></tr>")
+    w("</table>")
+
+    if r.consume_by_category:
+        w("<h2>🛍 消费画像</h2><table><tr><th>类别</th><th>笔数</th><th>金额</th></tr>")
+        for cat, v in sorted(r.consume_by_category.items(), key=lambda x: x[1]["total"], reverse=True):
+            w(f"<tr><td>{cat}</td><td>{v['count']}</td><td>{v['total']:,.0f}</td></tr>")
+        w("</table>")
+    if r.consume_luxury_count > 0:
+        brands = ", ".join(f"{b}({a:,.0f})" for b, a in r.consume_luxury_brands[:10])
+        w(f"<div class='card danger'><b>⚠ 高端消费:</b> {r.consume_luxury_count}笔 "
+          f"合计{r.consume_luxury_total:,.0f}元 | {brands}</div>")
+
+    if r.has_tenure:
+        w("<h2>📅 任职期对比</h2><table><tr><th>阶段</th><th>笔数</th><th>资金量</th>"
+          "<th>月均</th><th>消费</th><th>大额</th></tr>")
+        for label, data in [("任职前", r.tenure_before), ("任职中", r.tenure_during), ("任职后", r.tenure_after)]:
+            w(f"<tr><td>{label}</td><td>{data.get('笔数',0)}</td>"
+              f"<td>{data.get('资金量',0):,.0f}</td><td>{data.get('月均',0):,.0f}</td>"
+              f"<td>{data.get('消费',0):,.0f}</td><td>{data.get('大额(≥5万)',0)}</td></tr>")
+        w("</table>")
+
+    w("<h2>📝 方法说明</h2><div class='card'><ul>")
+    w("<li>资金量 = max(历史峰值, FIFO 循环池通量)</li>")
+    w("<li>可疑度 = 6 维加权：整数偏好+阈值规避+深夜+双向对手+HHI+消费比</li>")
+    w("<li>代持识别 = S5过账模式+S6单一受益人+收入模式+消费缺位</li>")
+    w("<li>对手分析 = 对公/个人自动分类 + 双向检测 + HHI 集中度</li>")
+    w("</ul></div></body></html>")
+    return "\n".join(lines)

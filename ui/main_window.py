@@ -16,6 +16,7 @@ from PySide6.QtCore import Qt
 from version import __version__, APP_NAME
 from engine import (
     Transaction, analyze_bank_flow, AnalysisResult, SuspicionConfig,
+    generate_report,
 )
 from ui.theme_manager import ThemeManager
 from ui.parsers import parse_amount, parse_date, resolve_direction
@@ -55,6 +56,7 @@ class MainWindow(QMainWindow):
         self._left.data_loaded.connect(self._on_data_loaded)
         self._left.run_requested.connect(self._on_run_requested)
         self._left.export_btn.clicked.connect(self._export_result)
+        self._left.report_requested.connect(self._export_report)
         root.addWidget(self._left)
 
         # 右侧 — 包裹在 ScrollArea 中支持横向滚动
@@ -282,6 +284,27 @@ class MainWindow(QMainWindow):
             ])
 
     # ═══ 导出 ═══════════════════════════════════════════
+
+    def _export_report(self):
+        """导出 HTML 证据报告"""
+        if self._result is None or not self._result.reports:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出证据报告", "资金分析报告.html", "HTML (*.html)")
+        if not path:
+            return
+        try:
+            all_html = ["<!DOCTYPE html><html><head><meta charset='utf-8'><title>银行流水分析报告</title></head><body>"]
+            for r in self._result.unique_reports:
+                html = generate_report(r, f"银行流水分析报告 — {r.name}")
+                all_html.append(html)
+                all_html.append("<hr style='margin:40px 0'>")
+            all_html.append("</body></html>")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(all_html))
+            self._status.showMessage(f"报告已导出: {path}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
 
     def _export_result(self):
         if self._result is None:
