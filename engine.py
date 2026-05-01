@@ -435,7 +435,10 @@ class ConsumptionClassifier:
                  "面馆", "饺子", "咖啡", "奶茶", "茶饮", "肯德基", "KFC", "麦当劳",
                  "McDonald", "海底捞", "星巴克", "Starbucks", "必胜客", "Pizza Hut",
                  "砂锅", "串串", "烤鸭", "牛排", "日料", "韩料", "粤菜", "湘菜"],
-        "酒店住宿": ["酒店", "宾馆", "旅馆", "民宿", "住宿", "客栈", "青旅"],
+        "酒店住宿": ["酒店", "宾馆", "旅馆", "民宿", "住宿", "客栈", "青旅",
+                    # 高端酒店品牌（与 LUXURY_BRANDS 重叠，但需在此声明便于类别归类）
+                    "希尔顿", "Hilton", "万豪", "Marriott", "洲际", "丽思卡尔顿", "Ritz",
+                    "四季", "Four Seasons", "文华东方", "Mandarin Oriental", "安缦", "Aman"],
         "旅游出行": ["旅游", "旅行", "机票", "火车票", "高铁", "动车", "汽车票",
                     "打车", "滴滴", "出租车", "加油", "中石油", "中石化", "Shell",
                     "高速", "ETC", "停车", "机票", "携程", "去哪儿", "飞猪",
@@ -456,24 +459,34 @@ class ConsumptionClassifier:
 
     @classmethod
     def classify_consumption(cls, counterparty: str, remark: str) -> dict:
-        """对一笔消费交易进行多级分类。返回 {category, is_luxury, matched_brand}"""
-        combined = f"{counterparty} {remark}"
+        """对一笔消费交易进行多级分类。返回 {category, is_luxury, matched_brand}
+
+        Bug 7 修复：先按消费类别分（如酒店、餐饮），再独立判断是否高端品牌。
+        这样万豪/希尔顿/丽思卡尔顿能既归"酒店住宿"，又被标 is_luxury。
+        """
+        combined = (f"{counterparty} {remark}").lower()
         result = {"category": "其他消费", "is_luxury": False, "matched_brand": ""}
 
-        # 先检查高端品牌（优先级最高）
+        # 1) 先按消费类别匹配（保留语义分类）
+        for cat, keywords in cls.CATEGORY_KEYWORDS.items():
+            if cat == "高端购物":
+                continue   # 高端购物在第 2 步单独判
+            for kw in keywords:
+                if kw.lower() in combined:
+                    result["category"] = cat
+                    break
+            if result["category"] != "其他消费":
+                break
+
+        # 2) 独立判断是否高端品牌（与类别正交）
         for brand in cls.LUXURY_BRANDS:
-            if brand.lower() in combined.lower():
-                result["category"] = "高端购物"
+            if brand.lower() in combined:
                 result["is_luxury"] = True
                 result["matched_brand"] = brand
-                return result
-
-        # 检查消费类别
-        for cat, keywords in cls.CATEGORY_KEYWORDS.items():
-            for kw in keywords:
-                if kw.lower() in combined.lower():
-                    result["category"] = cat
-                    return result
+                # 若类别仍是"其他"，归到"高端购物"；否则保留原类别（如酒店住宿）
+                if result["category"] == "其他消费":
+                    result["category"] = "高端购物"
+                break
 
         return result
 
@@ -716,7 +729,7 @@ class FinanceMatcher:
 @dataclass
 class SuspicionConfig:
     """可疑度评分可调阈值 (B3)"""
-    large_threshold: float = 50000.0       # 大额交易阈值
+    large_threshold: float = 50000.0       # 大额交易阈值（用户可调，仅用于"大额标识"统计）
     night_start: int = 22                  # 深夜起始小时
     night_end: int = 6                     # 深夜结束小时
     hhi_warning: float = 2500.0            # HHI 警告阈值
@@ -725,8 +738,13 @@ class SuspicionConfig:
     threshold_weight: float = 20.0         # 阈值规避权重
     night_weight: float = 15.0             # 深夜交易权重
     bidirectional_weight: float = 15.0     # 双向对手权重
-    hhi_weight: float = 15.0              # 集中度权重
+    hhi_weight: float = 15.0               # 集中度权重
     consume_ratio_weight: float = 15.0     # 消费收入比权重
+    blacklist_weight: float = 15.0         # 黑名单命中权重（Bug 1 修复：原本未参与打分）
+
+    # 反洗钱阈值（中国法定，固定不可调；与 large_threshold 解耦修复 Bug 4）
+    # 检测"踩线规避"金额时使用：5万为人民银行《金融机构大额交易和可疑交易报告管理办法》阈值
+    AML_THRESHOLDS: tuple = (50000.0, 200000.0)
 
 
 class CardAnalyzer:
@@ -864,18 +882,25 @@ class CardAnalyzer:
         report.has_tenure = True
 
         def slice_stats(txs: list) -> dict:
+            """计算单段统计。'资金量' 用 throughput（FIFO 循环池），不是 sum(amount)。"""
             if not txs:
                 return {"笔数": 0, "资金量": 0, "月均": 0, "消费": 0,
                         "大额(≥5万)": 0, "深夜%": 0, "对手数": 0}
             total = len(txs)
-            fund = sum(t.amount for t in txs)
+            # Bug 5 修复：资金量用 throughput 而非 sum(amount)（净流向）
+            # 净流向只反映余额变化，会被消费/转出冲销，掩盖任职期真实活跃度
+            throughput, _, _ = self._calc_throughput(txs)
             consume = sum(abs(t.amount) for t in txs if t.category == "consume")
-            months = max(1, (max(t.date for t in txs) - min(t.date for t in txs)).days / 30)
+            days = (max(t.date for t in txs) - min(t.date for t in txs)).days
+            months = max(1, days / 30)
             large = sum(1 for t in txs if abs(t.amount) >= 50000)
             night = sum(1 for t in txs if t.date.hour >= 22 or t.date.hour < 6)
-            cps = len(set((t.counterparty or "").strip() for t in txs))
+            # 对手数：过滤空对手名（Bug 7 衍生修复）
+            cps = len(set(c for c in (
+                (t.counterparty or "").strip() for t in txs) if c))
             return {
-                "笔数": total, "资金量": round(fund, 2), "月均": round(fund / months, 2),
+                "笔数": total, "资金量": round(throughput, 2),
+                "月均": round(throughput / months, 2),
                 "消费": round(consume, 2), "大额(≥5万)": large,
                 "深夜%": round(night / total * 100, 1) if total > 0 else 0,
                 "对手数": cps,
@@ -903,12 +928,24 @@ class CardAnalyzer:
         if not transactions:
             return
 
-        # ── S5: 非消费占比（仅工资+取现+转出，无主动消费）──
+        # ── 数据量门槛：交易量太少 / 没有任何流出，不足以判断代持 (Bug 2 修复) ──
+        # 死户卡（仅工资入账，零流出）原本会被默认 S5=1.0 误判为高度疑似
         outflows = [t for t in transactions if t.amount < 0]
         total_out = sum(abs(t.amount) for t in outflows) if outflows else 0
+        # 无流出 或 流出笔数 < 3 时不评分（数据不足以判断行为模式）
+        if total_out < 1.0 or len(outflows) < 3:
+            report.nominee_score = 0.0
+            report.nominee_label = "—（数据不足）"
+            report.nominee_signals = {"备注": f"流出笔数仅 {len(outflows)} 笔，不足以判断"}
+            report.nominee_beneficiary = ""
+            report.log(f"\n--- 代持卡识别 (C1) ---")
+            report.log(f"  数据不足: 流出{len(outflows)}笔/{total_out:.0f}元，跳过评分")
+            return
+
+        # ── S5: 非消费占比（仅工资+取现+转出，无主动消费）──
         non_consume_out = sum(abs(t.amount) for t in outflows
-                              if t.category != "consume") if outflows else 0
-        non_consume_ratio = non_consume_out / total_out if total_out > 0 else 1.0
+                              if t.category != "consume")
+        non_consume_ratio = non_consume_out / total_out
 
         # ── S6: 转出受益人集中度 ──
         transfer_outs = [t for t in transactions
@@ -931,10 +968,12 @@ class CardAnalyzer:
         s6_score = min(30, top1_share * 30 / 0.8) if sorted_bens else 0
         score += s6_score; sig["S6-单一受益人"] = round(s6_score, 1)
         # 收入模式 (20分): 仅有"工资类"转入 → 代持特征
+        # Bug 6 修复：删除占位符"自定义"
         income_txs = [t for t in transactions if t.amount > 0]
+        salary_keywords = ["工资", "薪金", "奖金", "劳务", "代付", "代发", "津贴"]
         salary_income = sum(t.amount for t in income_txs
                            if any(kw in (t.raw_type + t.counterparty)
-                                  for kw in ["工资", "薪金", "奖金", "劳务", "代付", "自定义"]))
+                                  for kw in salary_keywords))
         total_income_amt = sum(t.amount for t in income_txs) if income_txs else 0
         salary_ratio = salary_income / total_income_amt if total_income_amt > 0 else 0
         inc_score = min(20, salary_ratio * 20)
@@ -993,34 +1032,46 @@ class CardAnalyzer:
             return
 
         cfg = config or SuspicionConfig()
-        lt = cfg.large_threshold / 10000  # 大额阈值（万）
+        lt = cfg.large_threshold / 10000  # 大额阈值（万），仅用于"大额标识"统计
 
         # ── A2-min: 现金画像 ──
+        # Bug 4 修复：阈值规避检测使用法定反洗钱阈值（5万/20万固定），
+        #            与用户可调的 large_threshold 解耦
         int_pref = 0
-        near_threshold_lo = 0   # 低于大额阈值附近的交易
-        near_threshold_hi = 0   # 4倍大额阈值附近的交易
+        near_aml_lo = 0   # 5万阈值附近交易（人民银行反洗钱阈值）
+        near_aml_hi = 0   # 20万阈值附近交易
         night_txn = 0
         weekend_txn = 0
         blacklist_hits = 0
         total_txn = len(transactions)
 
-        threshold_lo = cfg.large_threshold
-        threshold_hi = cfg.large_threshold * 4.0
-        margin_lo = threshold_lo * 0.10  # ±10%
-        margin_hi = threshold_hi * 0.05  # ±5%
+        # AML 阈值（法定，固定值）
+        aml_lo, aml_hi = SuspicionConfig.AML_THRESHOLDS  # (50000, 200000)
+        # ±10% 区间（包含 50000 自身、49000 等踩线值）
+        aml_margin_lo = aml_lo * 0.10
+        aml_margin_hi = aml_hi * 0.10
+
+        # 整数偏好：经典踩线特征数字
+        # Bug 3 修复：覆盖恰好等于阈值的"贴线"金额（50000/200000 也算偏好）
+        # 以及 阈值-100/-1000 的踩线值（49900/49000/199000/199900 等）
+        integer_pref_targets = {
+            aml_lo, aml_lo - 100, aml_lo - 1000,           # 50000, 49900, 49000
+            aml_hi, aml_hi - 100, aml_hi - 1000,           # 200000, 199900, 199000
+            aml_lo * 2, aml_lo * 2 - 100, aml_lo * 2 - 1000,  # 100000, 99900, 99000
+            aml_lo * 10, aml_lo * 10 - 100, aml_lo * 10 - 1000,  # 500000 等
+        }
 
         for t in transactions:
             amt = abs(t.amount)
             # 阈值规避检测（万元以上的整千/整万金额才参与）
             if amt >= 10000 and (amt % 10000 == 0 or amt % 1000 == 0):
-                if threshold_lo - margin_lo <= amt <= threshold_lo + margin_lo:
-                    near_threshold_lo += 1
-                elif threshold_hi - margin_hi <= amt <= threshold_hi + margin_hi:
-                    near_threshold_hi += 1
-                # 整数偏好：恰好踩在阈值-1000/-100 的金额
-                for base in [threshold_lo - 1000, threshold_lo - 100,
-                             threshold_hi - 1000, threshold_hi - 100]:
-                    if abs(amt - base) <= 10:
+                if aml_lo - aml_margin_lo <= amt <= aml_lo + aml_margin_lo:
+                    near_aml_lo += 1
+                elif aml_hi - aml_margin_hi <= amt <= aml_hi + aml_margin_hi:
+                    near_aml_hi += 1
+                # 整数偏好命中
+                for target in integer_pref_targets:
+                    if abs(amt - target) <= 10:
                         int_pref += 1
                         break
             # 深夜交易
@@ -1030,10 +1081,14 @@ class CardAnalyzer:
             # 周末
             if t.date.weekday() >= 5:
                 weekend_txn += 1
-            # 黑名单
-            cp = (t.counterparty or "").lower()
+            # 黑名单（对手名 + 备注 + raw_type 都查）
+            haystack = (
+                (t.counterparty or "") + " " +
+                (t.remark or "") + " " +
+                (t.raw_type or "")
+            ).lower()
             for kw in cfg.blacklist_keywords:
-                if kw.lower() in cp:
+                if kw and kw.lower() in haystack:
                     blacklist_hits += 1
                     break
 
@@ -1049,7 +1104,7 @@ class CardAnalyzer:
         ip_score = min(cfg.integer_pref_weight, int_pref * 3)
         score += ip_score; detail["整数偏好"] = round(ip_score, 1)
 
-        th_score = min(cfg.threshold_weight, (near_threshold_lo + near_threshold_hi * 2) * 4)
+        th_score = min(cfg.threshold_weight, (near_aml_lo + near_aml_hi * 2) * 4)
         score += th_score; detail["阈值规避"] = round(th_score, 1)
 
         if has_reliable_time:
@@ -1074,10 +1129,18 @@ class CardAnalyzer:
         consume = report.consume_total
         if income > 0:
             cr = consume / income
-            ci_score = min(15, max(0, (cr - 0.5) * 15))
+            ci_score = min(cfg.consume_ratio_weight,
+                           max(0, (cr - 0.5) * cfg.consume_ratio_weight))
         else:
-            ci_score = 10
+            ci_score = cfg.consume_ratio_weight * 0.67  # 无收入数据 → 中等保守分
         score += ci_score; detail["消费收入比"] = round(ci_score, 1)
+
+        # Bug 1 修复：黑名单命中接入打分（每命中 1 次 +5 分，封顶 blacklist_weight）
+        if cfg.blacklist_keywords and blacklist_hits > 0:
+            bl_score = min(cfg.blacklist_weight, blacklist_hits * 5)
+        else:
+            bl_score = 0
+        score += bl_score; detail["黑名单命中"] = round(bl_score, 1)
 
         score = min(100, round(score, 1))
         report.suspicion_score = score
@@ -1090,9 +1153,9 @@ class CardAnalyzer:
         else:
             report.suspicion_label = "🔴 高"
 
-        report.log(f"\n--- 可疑度打分 (大额阈值≥{lt:.0f}万) ---")
+        report.log(f"\n--- 可疑度打分 (大额标识阈值={lt:.0f}万, AML阈值=5万/20万) ---")
         report.log(f"  整数偏好: {int_pref:.0f}次 深夜: {night_txn}次({night_ratio:.1%})")
-        report.log(f"  阈值规避: {near_threshold_lo:.0f}/{near_threshold_hi:.0f}次")
+        report.log(f"  阈值规避(AML 5万附近): {near_aml_lo:.0f}次, 20万附近: {near_aml_hi:.0f}次")
         report.log(f"  黑名单命中: {blacklist_hits}次 周末: {weekend_txn}次({weekend_ratio:.1%})")
         report.log(f"  评分: {score:.0f}/100 → {report.suspicion_label}")
         for k, v in detail.items():
