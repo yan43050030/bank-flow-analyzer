@@ -9,6 +9,7 @@ import pandas as pd
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QComboBox, QLabel, QTabWidget, QStatusBar, QFileDialog, QMessageBox,
+    QScrollArea, QSizePolicy,
 )
 from PySide6.QtCore import Qt
 
@@ -56,8 +57,14 @@ class MainWindow(QMainWindow):
         self._left.export_btn.clicked.connect(self._export_result)
         root.addWidget(self._left)
 
-        # 右侧
+        # 右侧 — 包裹在 ScrollArea 中支持横向滚动
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
         right = QWidget()
+        right.setMinimumWidth(700)
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(6)
@@ -84,7 +91,8 @@ class MainWindow(QMainWindow):
         self._tabs.currentChanged.connect(self._on_tab_changed)
         rv.addWidget(self._tabs, stretch=1)
 
-        root.addWidget(right, stretch=1)
+        scroll.setWidget(right)
+        root.addWidget(scroll, stretch=1)
 
         # 状态栏
         self._status = QStatusBar()
@@ -178,29 +186,36 @@ class MainWindow(QMainWindow):
         self._render_results()
         self._left.set_export_enabled(True)
 
-        n_cards = len(self._result.reports)
+        uniq = len(self._result.unique_reports)
+        total = len(self._result.reports)
         total_tx = sum(r.total_records for r in self._result.reports)
-        self._status.showMessage(f"统计完成 | {n_cards}张卡 {total_tx}笔交易")
+        dup_note = f"（去重后{uniq}张）" if uniq < total else ""
+        self._status.showMessage(f"统计完成 | {total}张卡{dup_note} {total_tx}笔交易")
 
     # ═══ 渲染结果 ══════════════════════════════════════
 
     def _render_results(self):
         reports = self._result.reports
+        uniq_set = {id(r): i for i, r in enumerate(self._result.unique_reports)}
 
         self._tabs.blockSignals(True)
         self._tabs.clear()
         self._card_tabs.clear()
 
-        # ── 汇总 Tab ──
+        # ── 汇总 Tab (使用去重数据) ──
         self._summary_tab = SummaryTab()
-        self._summary_tab.load(self._result)
+        self._summary_tab.load(self._result)  # 内部会调 unique_reports
         self._tabs.addTab(self._summary_tab, "📊 汇总")
 
         # ── 各卡 Tab ──
         for i, r in enumerate(reports):
             ct = CardTab()
             ct.load(r)
-            self._tabs.addTab(ct, self._tab_label(i, r))
+            label = self._tab_label(i, r)
+            # 标记重复卡
+            if id(r) not in uniq_set:
+                label += " [重复]"
+            self._tabs.addTab(ct, label)
             self._card_tabs.append(ct)
 
         self._tabs.blockSignals(False)

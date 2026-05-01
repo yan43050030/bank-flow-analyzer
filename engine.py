@@ -121,11 +121,29 @@ class AnalysisResult:
 
     @property
     def total_peak(self) -> float:
-        return sum(r.peak_funds for r in self.reports)
+        return sum(r.peak_funds for r in self.unique_reports)
 
     @property
     def total_balance(self) -> float:
-        return sum(r.balance for r in self.reports)
+        return sum(r.balance for r in self.unique_reports)
+
+    @property
+    def unique_reports(self) -> list:
+        """去重：多张卡对应同一流水时只保留一份"""
+        seen = set()
+        uniq = []
+        for r in self.reports:
+            # 指纹 = 笔数 + 入账合计 + 出账合计 + 资金量 + 首尾日期
+            if not r.all_transactions:
+                continue
+            dates = sorted(t.date for t in r.all_transactions)
+            fp = (r.total_records, round(r.total_income, 2), round(r.total_expense, 2),
+                  round(r.fund_size, 2),
+                  dates[0].strftime("%Y%m%d"), dates[-1].strftime("%Y%m%d"))
+            if fp not in seen:
+                seen.add(fp)
+                uniq.append(r)
+        return uniq
 
 
 # ═══════════════════════════════════════════════════════════
@@ -593,20 +611,33 @@ class CardAnalyzer:
 
         report.transfer_recycled = sum(p[4] for p in recycled_pairs)
 
-        cash_fund = min(cash_in_total, cash_out_total)
+        # ── 现金循环池算法 ──
+        # 取款→再存入 = 同一笔钱循环，避免 1000元存取10次算成10000
+        # 消费/转出后再存入 = 真新增（花出去的钱回不来）
+        cash_txs_sorted = sorted(
+            [t for t in transactions if t.category in ("cash_in", "cash_out")],
+            key=lambda t: t.date)
+        recycle_pool = 0.0
+        cash_new_money = 0.0
+        for t in cash_txs_sorted:
+            amt = abs(t.amount)
+            if t.category == "cash_out":
+                recycle_pool += amt
+            else:
+                from_pool = min(amt, recycle_pool)
+                recycle_pool -= from_pool
+                cash_new_money += amt - from_pool
+
+        cash_fund = cash_new_money
         finance_fund = min(finance_buy_total, finance_sell_total)
 
-        # 最小资金量（最小值法）：避免存取/理财循环重复计数
         min_fund_size = consume_total + transfer_fund + cash_fund + finance_fund
-
-        # 最终资金量 = max(历史最高峰值, 最小资金量)
-        # 理由：历史峰值是真实存在的资金（如大额存入又取出），不能因取小而被忽略
         report.fund_size = max(report.peak_funds, min_fund_size)
 
         report.fund_detail = {
             "消费(consume)": consume_total,
             "转出去重(transfer_dedup)": transfer_fund,
-            "存取取小(min_cash)": cash_fund,
+            f"现金新增(pool出{cash_out_total:,.0f}入{cash_in_total:,.0f})": cash_fund,
             "理财取小(min_finance)": finance_fund,
             "=最小资金量(min_fund)": min_fund_size,
             "历史最高峰值(peak)": report.peak_funds,
@@ -615,7 +646,6 @@ class CardAnalyzer:
         report.fund_detail["#同户转入出_取大组数"] = len(recycled_pairs)
         report.fund_detail["#同户转入出_抵销额"] = report.transfer_recycled
 
-        # 资金量结论
         if report.peak_funds > min_fund_size:
             peak_reason = f"历史峰值 {report.peak_funds:,.0f} > 最小资金量 {min_fund_size:,.0f}，说明该卡曾真实持有大额资金"
         elif abs(report.peak_funds - min_fund_size) < 1:
@@ -629,11 +659,11 @@ class CardAnalyzer:
         report.log(f"  入-出 = {expected_balance:,.2f}")
         report.log(f"  余额+未到期理财 = {actual_balance_plus_finance:,.2f}")
         report.log(f"  余额校验{'✓' if report.balance_verified else '✗ 差异=' + str(round(report.balance_diff, 2))}")
-        report.log(f"")
-        report.log(f"  历史最高峰值(A): {report.peak_funds:,.2f}  (时间序列累计最大值，真实存在)")
+        report.log(f"  现金循环池: 取款出{recycle_pool + cash_fund:,.0f} → 已回流{recycle_pool + cash_fund - cash_fund - recycle_pool:,.0f} → 剩余池{recycle_pool:,.0f} 新增资金{cash_fund:,.0f}")
+        report.log(f"  历史峰值(A): {report.peak_funds:,.2f}")
         report.log(f"  最小资金量(B): {min_fund_size:,.2f}")
         report.log(f"    = 消费{consume_total:,.0f} + 转出贡献{transfer_fund:,.0f}"
-                   f" + min存取{cash_fund:,.0f} + min理财{finance_fund:,.0f}")
+                   f" + 现金新增{cash_fund:,.0f} + min理财{finance_fund:,.0f}")
         report.log(f"  最终资金量 max(A,B): {report.fund_size:,.2f}")
         report.log(f"  结论: {peak_reason}")
         if recycled_pairs:

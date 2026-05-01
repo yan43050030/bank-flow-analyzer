@@ -41,13 +41,14 @@ class SummaryTab(QWidget):
         layout.addWidget(self._total_label)
 
     def load(self, result: AnalysisResult):
-        self._reports = result.reports
+        self._reports = result.unique_reports  # 去重
+        self._all_count = len(result.reports)
         self._build_cards()
         self._build_table()
         self._build_total()
 
     def fund_info(self) -> dict:
-        """返回汇总统计数据"""
+        """返回汇总统计数据（去重后）"""
         reports = self._reports
         return {
             "total_fund": sum(r.fund_size for r in reports),
@@ -58,6 +59,7 @@ class SummaryTab(QWidget):
             "total_expense": sum(r.total_expense for r in reports),
             "card_count": len(reports),
             "total_txns": sum(r.total_records for r in reports),
+            "dup_count": self._all_count - len(reports),
         }
 
     # ── 内部 ──────────────────────────────────────────
@@ -118,9 +120,11 @@ class SummaryTab(QWidget):
 
     def _build_total(self):
         info = self.fund_info()
+        dup_note = f" | ⚠ 已去重{info['dup_count']}张重复卡" if info['dup_count'] > 0 else ""
         self._total_label.setText(
-            f"▶ 合计: {info['card_count']}张卡 | {info['total_txns']}笔交易 | "
+            f"▶ 合计: {info['card_count']}张卡(去重) | {info['total_txns']}笔交易 | "
             f"总入账 {info['total_income']:,.0f} | 总出账 {info['total_expense']:,.0f} | "
             f"入-出 {info['total_income'] - info['total_expense']:,.0f} | "
             f"总资金量 {info['total_fund']:,.0f}"
+            f"{dup_note}"
         )

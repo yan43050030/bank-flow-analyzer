@@ -73,6 +73,14 @@ class Theme:
                 background: {c['input_bg']};
                 color: {c['text_primary']};
             }}
+            QComboBox QAbstractItemView {{
+                background: {c['input_bg']};
+                color: {c['text_primary']};
+                selection-background-color: {c['primary']};
+                selection-color: white;
+                border: 1px solid {c['border']};
+                outline: none;
+            }}
             QTableWidget {{
                 border: 1px solid {c['border']};
                 gridline-color: {c['card_border']};
