@@ -154,3 +154,13 @@ git push
 | v3.0 | 代持卡识别（行程 × 网点比对）+ 证据包导出 | 🎯 长期 |
 
 完整路线图见 [ROADMAP.md](ROADMAP.md) — 针对**职务犯罪调查**场景的功能规划与优先级。
+
+## AI 辅助开发
+
+本仓库针对多 AI 助手协作做了防回退保护：
+
+- [CLAUDE.md](CLAUDE.md) — 给 Claude/GPT/Gemini 等所有 LLM 的工作须知（七条铁律）
+- [docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md) — 关键算法决策的"为什么"
+- [docs/REGRESSION_GUARD.md](docs/REGRESSION_GUARD.md) — 历史回归 bug 与测试覆盖映射
+
+**任何 AI 助手修改 `engine.py` 前请先阅读上述三份文档**，避免重蹈历史回归（如 v2.5 把 v2.3 的修复改回去的悲剧）。

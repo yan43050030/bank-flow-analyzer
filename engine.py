@@ -265,7 +265,12 @@ class TransactionClassifier:
 # ═══════════════════════════════════════════════════════════
 
 class CounterpartyAnalyzer:
-    """从交易列表中提取对手统计：Top N / 对公对私 / 双向检测 / 集中度"""
+    """从交易列表中提取对手统计：Top N / 对公对私 / 双向检测 / 集中度
+
+    CRITICAL: HHI 必须输出两个值（hhi 含工资、hhi_excl_salary 剔除工资）
+    A5 可疑度评分必须用 hhi_excl_salary，否则正常工资人群顶格 15 分
+    历史回归 v2.3 P2 — 详见 docs/DESIGN_DECISIONS.md#hhi-排除工资
+    """
 
     # 对公关键词（核心组织名特征）
     _BIZ_KEYWORDS = [
@@ -461,8 +466,9 @@ class ConsumptionClassifier:
     def classify_consumption(cls, counterparty: str, remark: str) -> dict:
         """对一笔消费交易进行多级分类。返回 {category, is_luxury, matched_brand}
 
-        Bug 7 修复：先按消费类别分（如酒店、餐饮），再独立判断是否高端品牌。
-        这样万豪/希尔顿/丽思卡尔顿能既归"酒店住宿"，又被标 is_luxury。
+        CRITICAL: category 和 is_luxury 是两个正交维度，绝不能合并
+        历史回归(v3.0.1 Bug 7): 旧版"先匹配 luxury 就 return"导致万豪被归"高端购物"，
+        失去酒店分类信息。详见 docs/DESIGN_DECISIONS.md#消费分类
         """
         combined = (f"{counterparty} {remark}").lower()
         result = {"category": "其他消费", "is_luxury": False, "matched_brand": ""}
@@ -726,6 +732,9 @@ class FinanceMatcher:
 # 卡片分析器
 # ═══════════════════════════════════════════════════════════
 
+# CRITICAL: 修改本类前必读 docs/DESIGN_DECISIONS.md#aml-阈值不可调
+# 历史回归: v2.5 把 AML 阈值合并进 large_threshold，导致用户改阈值后反洗钱检测失效
+# 历史回归: v2.5 引入 blacklist_keywords 但未接入 score（Bug 1）
 @dataclass
 class SuspicionConfig:
     """可疑度评分可调阈值 (B3)"""
@@ -742,8 +751,8 @@ class SuspicionConfig:
     consume_ratio_weight: float = 15.0     # 消费收入比权重
     blacklist_weight: float = 15.0         # 黑名单命中权重（Bug 1 修复：原本未参与打分）
 
-    # 反洗钱阈值（中国法定，固定不可调；与 large_threshold 解耦修复 Bug 4）
-    # 检测"踩线规避"金额时使用：5万为人民银行《金融机构大额交易和可疑交易报告管理办法》阈值
+    # CRITICAL: AML_THRESHOLDS 是中国法定反洗钱阈值（人民银行规定），用户不能调
+    # 不要把它改成 dataclass 字段。详见 docs/DESIGN_DECISIONS.md#aml-阈值不可调
     AML_THRESHOLDS: tuple = (50000.0, 200000.0)
 
 
@@ -878,7 +887,12 @@ class CardAnalyzer:
 
     def _analyze_tenure(self, report: CardReport, transactions: list,
                         t_start: datetime, t_end: datetime):
-        """A3 任职期对比: 三段统计"""
+        """A3 任职期对比: 三段统计
+
+        CRITICAL: '资金量' 必须调用 _calc_throughput()，绝不能用 sum(t.amount)
+        历史回归(v3.0.1 Bug 5): sum(amount) 是净流向，被消费/转出冲销，
+        掩盖任职期间的真实活跃度。详见 docs/DESIGN_DECISIONS.md#任职期资金量
+        """
         report.has_tenure = True
 
         def slice_stats(txs: list) -> dict:
@@ -924,7 +938,11 @@ class CardAnalyzer:
                        f"大额{data['大额(≥5万)']}笔 深夜{data['深夜%']}%")
 
     def _analyze_nominee(self, report: CardReport, transactions: list):
-        """C1 代持卡识别: S5 无消费模式 + S6 单一受益人"""
+        """C1 代持卡识别: S5 无消费模式 + S6 单一受益人
+
+        CRITICAL: 修改本函数前必读 docs/DESIGN_DECISIONS.md#代持卡数据门槛
+        历史回归(v3.0.1 Bug 2): total_out=0 时默认 S5=1.0 让死户卡误判为🔴高度疑似
+        """
         if not transactions:
             return
 
@@ -1027,7 +1045,20 @@ class CardAnalyzer:
 
     def _analyze_suspicion(self, report: CardReport, transactions: list,
                            config: Optional[SuspicionConfig] = None):
-        """A2-min 现金画像 + A5 可疑度打分 0-100（可调阈值 B3）"""
+        """A2-min 现金画像 + A5 可疑度打分 0-100（可调阈值 B3）
+
+        CRITICAL: 修改本函数前必读:
+          - docs/DESIGN_DECISIONS.md#可疑度打分
+          - docs/DESIGN_DECISIONS.md#aml-阈值不可调
+          - docs/REGRESSION_GUARD.md (Bug 1, 3, 4 — 都发生在本函数)
+
+        重要规则:
+          1. 阈值规避检测必须基于 SuspicionConfig.AML_THRESHOLDS（5万/20万），
+             不能基于 cfg.large_threshold（用户可调）
+          2. 整数偏好的命中表必须包含 50000/200000 自身（不只是 49000/199000）
+          3. 黑名单命中必须接入 score（不要只 log 不计分）
+          4. 测试断言失败时，先理解原因，不要放宽断言
+        """
         if not transactions:
             return
 
@@ -1284,6 +1315,11 @@ class CardAnalyzer:
     ) -> Tuple[float, Dict[str, float], Dict[str, float]]:
         """
         资金通量算法：累计真实流入卡的资金（去除循环）
+
+        CRITICAL: 这是核心算法，所有"真实资金量"的计算都应调用本方法
+        不要用 sum(amount) 或简单加总替代——会重复计算同一笔钱的循环流通
+        历史回归 v2.2: 跨载体循环（现金→理财→赎回）被算两次
+        详见 docs/DESIGN_DECISIONS.md#资金量算法
 
         按时间顺序遍历交易，维护三个 FIFO 池来识别"同一笔钱反复流通"：
           - pocket_pool   : 已取出未存回的现金（取款进池→存款消费池）
