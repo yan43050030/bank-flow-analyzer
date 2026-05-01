@@ -21,8 +21,8 @@ class LeftPanel(QWidget):
 
     # 数据就绪信号: (df, file_path)
     data_loaded = Signal(object, str)
-    # 执行分析信号: (mappings_dict, params_dict)
-    run_requested = Signal(dict, dict)
+    # 执行分析信号: (mappings_dict, params_dict, suspicion_config_dict)
+    run_requested = Signal(dict, dict, dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -82,6 +82,32 @@ class LeftPanel(QWidget):
         self.chk_small = QCheckBox("忽略小额交易 (<100元)")
         v.addWidget(self.chk_small)
         lv.addWidget(g3)
+
+        # ── 可调阈值 (B3) ──
+        g4 = QGroupBox("可疑度阈值 (B3)")
+        v4 = QVBoxLayout(g4)
+        h3 = QHBoxLayout()
+        h3.addWidget(QLabel("大额阈值(万):"))
+        self.spin_large = QSpinBox(); self.spin_large.setRange(1, 1000)
+        self.spin_large.setValue(5); self.spin_large.setSuffix("万")
+        h3.addWidget(self.spin_large); v4.addLayout(h3)
+        h4 = QHBoxLayout()
+        h4.addWidget(QLabel("深夜时段:"))
+        self.spin_night_start = QSpinBox(); self.spin_night_start.setRange(18, 23)
+        self.spin_night_start.setValue(22)
+        h4.addWidget(self.spin_night_start)
+        h4.addWidget(QLabel("~"))
+        self.spin_night_end = QSpinBox(); self.spin_night_end.setRange(0, 8)
+        self.spin_night_end.setValue(6)
+        h4.addWidget(self.spin_night_end); h4.addWidget(QLabel("时"))
+        v4.addLayout(h4)
+        from PySide6.QtWidgets import QLineEdit
+        h5 = QHBoxLayout()
+        h5.addWidget(QLabel("对手黑名单:"))
+        self.edit_blacklist = QLineEdit()
+        self.edit_blacklist.setPlaceholderText("逗号分隔，如: 博彩,虚拟币")
+        h5.addWidget(self.edit_blacklist); v4.addLayout(h5)
+        lv.addWidget(g4)
 
         # ── 执行 ──
         self.btn_run = QPushButton("▶ 开始统计")
@@ -172,7 +198,14 @@ class LeftPanel(QWidget):
             "finance_max_days": self.spin_fin.value(),
             "skip_small": self.chk_small.isChecked(),
         }
-        self.run_requested.emit(mappings, params)
+        bl = self.edit_blacklist.text().strip()
+        config = {
+            "large_threshold": self.spin_large.value() * 10000,
+            "night_start": self.spin_night_start.value(),
+            "night_end": self.spin_night_end.value(),
+            "blacklist_keywords": [kw.strip() for kw in bl.split(",") if kw.strip()] if bl else [],
+        }
+        self.run_requested.emit(mappings, params, config)
 
     # ── 外部可设置 ────────────────────────────────────
     def set_export_enabled(self, enabled: bool):

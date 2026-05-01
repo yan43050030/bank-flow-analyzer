@@ -15,7 +15,7 @@ from PySide6.QtCore import Qt
 
 from version import __version__, APP_NAME
 from engine import (
-    Transaction, analyze_bank_flow, AnalysisResult,
+    Transaction, analyze_bank_flow, AnalysisResult, SuspicionConfig,
 )
 from ui.theme_manager import ThemeManager
 from ui.parsers import parse_amount, parse_date, resolve_direction
@@ -135,7 +135,7 @@ class MainWindow(QMainWindow):
         self._current_file = path
         self._status.showMessage(f"导入: {os.path.basename(path)} | {len(df)} 行")
 
-    def _on_run_requested(self, mappings: dict, params: dict):
+    def _on_run_requested(self, mappings: dict, params: dict, config: dict):
         if self._df is None:
             return
         df = self._df.copy()
@@ -149,11 +149,9 @@ class MainWindow(QMainWindow):
             amt = parse_amount(row[mappings["amount"]])
             if amt == 0:
                 continue
-            # 借贷标志
             dc_col = mappings.get("dc", "")
             direction = resolve_direction(row[dc_col]) if dc_col else 0
             amt = abs(amt) if direction == 1 else (-abs(amt) if direction == -1 else amt)
-            # 小额过滤
             if params.get("skip_small") and abs(amt) < 100:
                 continue
             tx = Transaction(
@@ -174,12 +172,21 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "没有有效的交易数据")
             return
 
+        # 构建可调阈值配置
+        sconfig = SuspicionConfig(
+            large_threshold=float(config.get("large_threshold", 50000)),
+            night_start=int(config.get("night_start", 22)),
+            night_end=int(config.get("night_end", 6)),
+            blacklist_keywords=config.get("blacklist_keywords", []),
+        )
+
         # 执行分析
         self._result = analyze_bank_flow(
             transactions,
             mappings["card"],
             cash_max_days=params.get("cash_max_days", 30),
             finance_max_days=params.get("finance_max_days", 365 * 3),
+            suspicion_config=sconfig,
         )
 
         # 渲染

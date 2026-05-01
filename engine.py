@@ -707,6 +707,22 @@ class FinanceMatcher:
 # 卡片分析器
 # ═══════════════════════════════════════════════════════════
 
+@dataclass
+class SuspicionConfig:
+    """可疑度评分可调阈值 (B3)"""
+    large_threshold: float = 50000.0       # 大额交易阈值
+    night_start: int = 22                  # 深夜起始小时
+    night_end: int = 6                     # 深夜结束小时
+    hhi_warning: float = 2500.0            # HHI 警告阈值
+    blacklist_keywords: list = field(default_factory=list)  # 对手黑名单关键词
+    integer_pref_weight: float = 20.0      # 整数偏好权重
+    threshold_weight: float = 20.0         # 阈值规避权重
+    night_weight: float = 15.0             # 深夜交易权重
+    bidirectional_weight: float = 15.0     # 双向对手权重
+    hhi_weight: float = 15.0              # 集中度权重
+    consume_ratio_weight: float = 15.0     # 消费收入比权重
+
+
 class CardAnalyzer:
     """单张卡完整分析"""
 
@@ -716,7 +732,8 @@ class CardAnalyzer:
 
     def analyze(self, card: str, name: str, transactions: List[Transaction],
                 tenure_start: Optional[datetime] = None,
-                tenure_end: Optional[datetime] = None) -> CardReport:
+                tenure_end: Optional[datetime] = None,
+                suspicion_config: Optional[SuspicionConfig] = None) -> CardReport:
         report = CardReport(card=card, name=name)
         report.total_records = len(transactions)
         report.all_transactions = transactions
@@ -821,7 +838,7 @@ class CardAnalyzer:
         self._analyze_counterparties(report, transactions)
 
         # === Step 8: 可疑度打分 ===
-        self._analyze_suspicion(report, transactions)
+        self._analyze_suspicion(report, transactions, suspicion_config)
 
         # === Step 9: 消费画像 ===
         self._analyze_consumption(report, transactions)
@@ -890,85 +907,90 @@ class CardAnalyzer:
             if v["total"] > 0:
                 report.log(f"  {cat}: {v['count']}笔 {v['total']:,.2f}")
 
-    def _analyze_suspicion(self, report: CardReport, transactions: list):
-        """A2-min 现金画像 + A5 可疑度打分 0-100"""
+    def _analyze_suspicion(self, report: CardReport, transactions: list,
+                           config: Optional[SuspicionConfig] = None):
+        """A2-min 现金画像 + A5 可疑度打分 0-100（可调阈值 B3）"""
         if not transactions:
             return
 
+        cfg = config or SuspicionConfig()
+        lt = cfg.large_threshold / 10000  # 大额阈值（万）
+
         # ── A2-min: 现金画像 ──
-        int_pref = 0       # 整数偏好次数
-        near_50k = 0       # 5万阈值附近
-        near_200k = 0      # 20万阈值附近
-        night_txn = 0      # 深夜交易 (22:00-06:00)
-        weekend_txn = 0    # 周末交易
+        int_pref = 0
+        near_threshold_lo = 0   # 低于大额阈值附近的交易
+        near_threshold_hi = 0   # 4倍大额阈值附近的交易
+        night_txn = 0
+        weekend_txn = 0
+        blacklist_hits = 0
         total_txn = len(transactions)
+
+        threshold_lo = cfg.large_threshold
+        threshold_hi = cfg.large_threshold * 4.0
+        margin_lo = threshold_lo * 0.10  # ±10%
+        margin_hi = threshold_hi * 0.05  # ±5%
 
         for t in transactions:
             amt = abs(t.amount)
-            # 仅在万元以上、整千/整万金额上判断阈值规避与整数偏好
+            # 阈值规避检测（万元以上的整千/整万金额才参与）
             if amt >= 10000 and (amt % 10000 == 0 or amt % 1000 == 0):
-                # 阈值规避（独立计数，不被整数偏好的 elif 短路）
-                # 49000 / 199000 这种"踩线"金额必须同时计入 near_50k / near_200k
-                if 45000 <= amt <= 51000:
-                    near_50k += 1
-                elif 190000 <= amt <= 210000:
-                    near_200k += 1
-                # 整数偏好（命中明显规避特征数字 +1，靠近阈值 +0.5）
-                if amt in (49000, 99000, 199000, 490000, 990000):
-                    int_pref += 1
-                elif (45000 <= amt <= 51000) or (190000 <= amt <= 210000):
-                    int_pref += 0.5
+                if threshold_lo - margin_lo <= amt <= threshold_lo + margin_lo:
+                    near_threshold_lo += 1
+                elif threshold_hi - margin_hi <= amt <= threshold_hi + margin_hi:
+                    near_threshold_hi += 1
+                # 整数偏好：恰好踩在阈值-1000/-100 的金额
+                for base in [threshold_lo - 1000, threshold_lo - 100,
+                             threshold_hi - 1000, threshold_hi - 100]:
+                    if abs(amt - base) <= 10:
+                        int_pref += 1
+                        break
             # 深夜交易
             hour = t.date.hour
-            if 22 <= hour or hour < 6:
+            if hour >= cfg.night_start or hour < cfg.night_end:
                 night_txn += 1
             # 周末
             if t.date.weekday() >= 5:
                 weekend_txn += 1
+            # 黑名单
+            cp = (t.counterparty or "").lower()
+            for kw in cfg.blacklist_keywords:
+                if kw.lower() in cp:
+                    blacklist_hits += 1
+                    break
 
         night_ratio = night_txn / total_txn if total_txn > 0 else 0
         weekend_ratio = weekend_txn / total_txn if total_txn > 0 else 0
-
-        # 时间数据有效性：若超过半数交易的 hour=0，认为数据只有日期，深夜分不可信
         zero_hour = sum(1 for t in transactions if t.date.hour == 0)
         has_reliable_time = total_txn > 0 and (zero_hour / total_txn) < 0.5
 
-        # ── A5: 可疑度打分 ──
+        # ── A5: 可疑度打分（使用可调权重）──
         score = 0.0
         detail = {}
 
-        # 1. 整数偏好 (20分)
-        ip_score = min(20, int_pref * 3)
+        ip_score = min(cfg.integer_pref_weight, int_pref * 3)
         score += ip_score; detail["整数偏好"] = round(ip_score, 1)
 
-        # 2. 阈值规避 (20分): 5万/20万附近交易
-        th_score = min(20, (near_50k + near_200k * 2) * 4)
+        th_score = min(cfg.threshold_weight, (near_threshold_lo + near_threshold_hi * 2) * 4)
         score += th_score; detail["阈值规避"] = round(th_score, 1)
 
-        # 3. 深夜交易 (15分)
-        # 仅在时间数据可信时评分（很多银行流水只有日期无具体时间，会让所有交易=00:00）
         if has_reliable_time:
-            nt_score = min(15, night_ratio * 100)
+            nt_score = min(cfg.night_weight, night_ratio * 100)
         else:
             nt_score = 0
         score += nt_score; detail["深夜交易"] = round(nt_score, 1)
 
-        # 4. 双向对手 (15分): 双向对手多 → 疑似过账
-        bi_score = min(15, report.cp_bi_count * 3)
+        bi_score = min(cfg.bidirectional_weight, report.cp_bi_count * 3)
         score += bi_score; detail["双向对手"] = round(bi_score, 1)
 
-        # 5. 集中度 (15分): 用剔除工资类后的 HHI，避免正常工资人群顶格
-        # - 非工资对手 < 5 时不评分（数据太少不可靠）
-        # - HHI 5000-10000 区间映射到 0-15 分（>10000 满分）
-        non_salary_players = report.cp_total_players - report.cp_salary_source_count
-        hhi_for_score = report.cp_hhi_excl_salary
-        if non_salary_players >= 5 and hhi_for_score > 0:
-            hhi_score = min(15, max(0, (hhi_for_score - 5000) / 5000 * 15))
+        non_salary = report.cp_total_players - report.cp_salary_source_count
+        hhi_val = report.cp_hhi_excl_salary
+        if non_salary >= 5 and hhi_val > 0:
+            hhi_score = min(cfg.hhi_weight,
+                            max(0, (hhi_val - cfg.hhi_warning) / cfg.hhi_warning * cfg.hhi_weight))
         else:
             hhi_score = 0
         score += hhi_score; detail["对手集中度"] = round(hhi_score, 1)
 
-        # 6. 消费/收入比异常 (15分): 消费远超收入
         income = report.total_income
         consume = report.consume_total
         if income > 0:
@@ -989,9 +1011,10 @@ class CardAnalyzer:
         else:
             report.suspicion_label = "🔴 高"
 
-        report.log(f"\n--- 可疑度打分 ---")
-        report.log(f"  整数偏好: {int_pref:.0f}次 深夜交易: {night_txn}次({night_ratio:.1%})")
-        report.log(f"  阈值规避: {near_50k:.0f}+{near_200k:.0f}次 周末: {weekend_txn}次({weekend_ratio:.1%})")
+        report.log(f"\n--- 可疑度打分 (大额阈值≥{lt:.0f}万) ---")
+        report.log(f"  整数偏好: {int_pref:.0f}次 深夜: {night_txn}次({night_ratio:.1%})")
+        report.log(f"  阈值规避: {near_threshold_lo:.0f}/{near_threshold_hi:.0f}次")
+        report.log(f"  黑名单命中: {blacklist_hits}次 周末: {weekend_txn}次({weekend_ratio:.1%})")
         report.log(f"  评分: {score:.0f}/100 → {report.suspicion_label}")
         for k, v in detail.items():
             report.log(f"    {k}: {v:.0f}分")
@@ -1216,7 +1239,8 @@ def analyze_bank_flow(transactions: List[Transaction],
                       cash_max_days: int = 30,
                       finance_max_days: int = 365 * 3,
                       tenure_start: Optional[datetime] = None,
-                      tenure_end: Optional[datetime] = None) -> AnalysisResult:
+                      tenure_end: Optional[datetime] = None,
+                      suspicion_config: Optional[SuspicionConfig] = None) -> AnalysisResult:
     """批量分析所有卡"""
     result = AnalysisResult()
 
@@ -1229,7 +1253,8 @@ def analyze_bank_flow(transactions: List[Transaction],
         analyzer = CardAnalyzer(cash_max_days=cash_max_days, finance_max_days=finance_max_days)
         report = analyzer.analyze(card, name, txs,
                                   tenure_start=tenure_start,
-                                  tenure_end=tenure_end)
+                                  tenure_end=tenure_end,
+                                  suspicion_config=suspicion_config)
         result.reports.append(report)
         result.summary_steps.extend(report.steps)
 
