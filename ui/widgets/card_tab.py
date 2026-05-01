@@ -72,11 +72,46 @@ class CardTab(QWidget):
         cv.addWidget(self._cp_table)
         self._sub_tabs.addTab(cp_page, "🔍 对手分析")
 
+        # ── 子 Tab 3: 消费画像 ──
+        consume_page = QWidget()
+        cv2 = QVBoxLayout(consume_page)
+        cv2.setContentsMargins(0, 0, 0, 0)
+        self._consume_info = QLabel()
+        self._consume_info.setStyleSheet("font-size:12px; padding:4px;")
+        cv2.addWidget(self._consume_info)
+        self._consume_table = QTableWidget()
+        self._consume_table.setAlternatingRowColors(True)
+        self._consume_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._consume_table.setColumnCount(3)
+        self._consume_table.setHorizontalHeaderLabels(["消费类别", "笔数", "金额"])
+        self._consume_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        cv2.addWidget(self._consume_table)
+        self._sub_tabs.addTab(consume_page, "🛍 消费画像")
+
+        # ── 子 Tab 4: 任职对比 ──
+        tenure_page = QWidget()
+        tv = QVBoxLayout(tenure_page)
+        tv.setContentsMargins(0, 0, 0, 0)
+        self._tenure_info = QLabel("未设置任职期")
+        self._tenure_info.setStyleSheet("font-size:12px; padding:4px;")
+        tv.addWidget(self._tenure_info)
+        self._tenure_table = QTableWidget()
+        self._tenure_table.setAlternatingRowColors(True)
+        self._tenure_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._tenure_table.setColumnCount(8)
+        self._tenure_table.setHorizontalHeaderLabels(
+            ["阶段", "笔数", "资金量", "月均", "消费", "大额(≥5万)", "深夜%", "对手数"])
+        self._tenure_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        tv.addWidget(self._tenure_table)
+        self._sub_tabs.addTab(tenure_page, "📅 任职对比")
+
     def load(self, report: CardReport):
         """加载单卡报告"""
         self._steps.setText("\n".join(report.steps))
         self._build_detail_table(report)
         self._build_cp_table(report)
+        self._build_consume_table(report)
+        self._build_tenure_table(report)
 
     # ── 统计明细 ──────────────────────────────────────
 
@@ -168,3 +203,60 @@ class CardTab(QWidget):
 
         self._cp_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self._cp_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+
+    # ── 消费画像 (A4) ──────────────────────────────────
+
+    def _build_consume_table(self, r: CardReport):
+        cats = r.consume_by_category
+        if not cats:
+            self._consume_info.setText("无消费数据")
+            self._consume_table.setRowCount(0)
+            return
+
+        luxury_note = ""
+        if r.consume_luxury_count > 0:
+            brands = ", ".join(f"{b}({a:,.0f})" for b, a in r.consume_luxury_brands[:8])
+            luxury_note = (f"⚠ 高端消费: {r.consume_luxury_count}笔 "
+                           f"合计{r.consume_luxury_total:,.0f}元 | 品牌: {brands}")
+
+        self._consume_info.setText(
+            f"消费总笔数: {sum(v['count'] for v in cats.values())} | "
+            f"分类数: {len(cats)} | {luxury_note}"
+        )
+
+        sorted_cats = sorted(cats.items(), key=lambda x: x[1]["total"], reverse=True)
+        self._consume_table.setRowCount(len(sorted_cats))
+        for i, (cat, v) in enumerate(sorted_cats):
+            for j, val in enumerate([cat, str(v["count"]), f"{v['total']:,.0f}"]):
+                item = QTableWidgetItem(val)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if cat == "高端购物":
+                    from PySide6.QtGui import QColor
+                    item.setBackground(QColor("#FFE0E0"))
+                self._consume_table.setItem(i, j, item)
+
+    # ── 任职对比 (A3) ──────────────────────────────────
+
+    def _build_tenure_table(self, r: CardReport):
+        if not r.has_tenure:
+            self._tenure_info.setText("未设置任职期（可在左侧面板设置后重新统计）")
+            self._tenure_table.setRowCount(0)
+            return
+
+        self._tenure_info.setText("任职期已设置 — 对比三段: 任职前 / 任职中 / 任职后")
+        rows = [("任职前", r.tenure_before), ("任职中", r.tenure_during), ("任职后", r.tenure_after)]
+        self._tenure_table.setRowCount(3)
+        for i, (label, data) in enumerate(rows):
+            vals = [
+                label, str(data.get("笔数", 0)),
+                f"{data.get('资金量', 0):,.0f}", f"{data.get('月均', 0):,.0f}",
+                f"{data.get('消费', 0):,.0f}", str(data.get("大额(≥5万)", 0)),
+                f"{data.get('深夜%', 0)}%", str(data.get("对手数", 0)),
+            ]
+            for j, v in enumerate(vals):
+                item = QTableWidgetItem(v)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if label == "任职中":
+                    from PySide6.QtGui import QColor
+                    item.setBackground(QColor("#FFF3CD"))
+                self._tenure_table.setItem(i, j, item)

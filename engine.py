@@ -111,6 +111,13 @@ class CardReport:
     tenure_before: dict = field(default_factory=dict)
     tenure_during: dict = field(default_factory=dict)
     tenure_after: dict = field(default_factory=dict)
+    has_tenure: bool = False
+
+    # ── 消费画像 (A4) ──
+    consume_luxury_count: int = 0          # 高端消费笔数
+    consume_luxury_total: float = 0.0      # 高端消费总额
+    consume_by_category: dict = field(default_factory=dict)  # 分类汇总
+    consume_luxury_brands: list = field(default_factory=list)  # 命中品牌列表
 
     # ── 资金量分析（最小值法）──
     total_income: float = 0.0          # 入账合计
@@ -383,6 +390,124 @@ class CounterpartyAnalyzer:
 # 现金存取链配对
 # ═══════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════
+# 消费画像 (A4)
+# ═══════════════════════════════════════════════════════════
+
+class ConsumptionClassifier:
+    """消费多级分类 + 高端品牌识别"""
+
+    # 高端品牌关键词库
+    LUXURY_BRANDS = [
+        "爱马仕", "Hermes", "卡地亚", "Cartier", "LV", "Louis Vuitton",
+        "Tiffany", "蒂芙尼", "迪奥", "Dior", "阿玛尼", "Armani",
+        "古驰", "Gucci", "普拉达", "Prada", "宝格丽", "Bvlgari",
+        "劳力士", "Rolex", "百达翡丽", "Patek", "江诗丹顿",
+        "万国", "IWC", "欧米茄", "Omega", "浪琴", "Longines",
+        "博柏利", "Burberry", "芬迪", "Fendi", "圣罗兰", "YSL",
+        "范思哲", "Versace", "巴黎世家", "Balenciaga", "纪梵希", "Givenchy",
+        "香奈儿", "Chanel", "赛琳", "Celine", "罗意威", "Loewe",
+        "葆蝶家", "Bottega", "华伦天奴", "Valentino", "盟可睐", "Moncler",
+        "加拿大鹅", "Canada Goose", "始祖鸟", "Arc'teryx",
+        "宝珀", "Blancpain", "积家", "Jaeger", "理查德米勒", "Richard Mille",
+        "奔驰", "Mercedes", "宝马", "BMW", "保时捷", "Porsche", "奥迪", "Audi",
+        "特斯拉", "Tesla", "雷克萨斯", "Lexus", "宾利", "Bentley",
+        "茅台", "五粮液", "拉菲", "Lafite", "马爹利", "轩尼诗", "Hennessy",
+        "希尔顿", "Hilton", "万豪", "Marriott", "洲际", "丽思卡尔顿", "Ritz",
+        "四季", "Four Seasons", "文华东方", "Mandarin Oriental", "安缦", "Aman",
+        "头等舱", "商务舱", "公务舱",
+        "高尔夫", "马术", "游艇", "赛马", "私人会所",
+        "SKP", "连卡佛", "恒隆", "太古汇", "IFC",
+    ]
+
+    # 消费类别关键词
+    CATEGORY_KEYWORDS = {
+        "高端购物": LUXURY_BRANDS,
+        "日用百货": ["超市", "百货", "商场", "便利店", "永辉", "物美", "华联", "大润发",
+                    "沃尔玛", "Walmart", "Costco", "山姆", "Sam's", "屈臣氏", "711"],
+        "餐饮": ["餐饮", "饭店", "餐厅", "火锅", "烧烤", "料理", "自助", "小吃", "快餐",
+                 "面馆", "饺子", "咖啡", "奶茶", "茶饮", "肯德基", "KFC", "麦当劳",
+                 "McDonald", "海底捞", "星巴克", "Starbucks", "必胜客", "Pizza Hut",
+                 "砂锅", "串串", "烤鸭", "牛排", "日料", "韩料", "粤菜", "湘菜"],
+        "酒店住宿": ["酒店", "宾馆", "旅馆", "民宿", "住宿", "客栈", "青旅"],
+        "旅游出行": ["旅游", "旅行", "机票", "火车票", "高铁", "动车", "汽车票",
+                    "打车", "滴滴", "出租车", "加油", "中石油", "中石化", "Shell",
+                    "高速", "ETC", "停车", "机票", "携程", "去哪儿", "飞猪",
+                    "航空", "机场", "旅行社", "景区", "门票"],
+        "医疗健康": ["医院", "诊所", "药房", "药店", "医药", "门诊", "手术", "体检",
+                    "牙科", "眼科", "中医", "同仁堂", "体检中心"],
+        "教育培训": ["教育", "培训", "学校", "学费", "补习", "网课", "考试", "报名",
+                    "留学", "雅思", "托福", "GRE", "MBA", "学而思", "新东方"],
+        "生活服务": ["物业", "水电", "燃气", "暖气", "宽带", "话费", "充值", "快递",
+                    "顺丰", "EMS", "邮政", "维修", "保洁", "洗衣", "理发", "美发"],
+        "娱乐休闲": ["KTV", "酒吧", "夜店", "足疗", "按摩", "洗浴", "桑拿", "SPA",
+                    "美容", "健身", "游泳", "滑雪", "温泉", "密室", "剧本杀",
+                    "电影", "影院", "万达", "CGV", "IMAX", "桌游", "棋牌"],
+        "数码家电": ["手机", "电脑", "笔记本", "iPad", "iPhone", "华为", "小米",
+                    "苹果", "Samsung", "三星", "电器", "家电", "国美", "苏宁",
+                    "数码", "相机", "镜头", "无人机", "DJI"],
+    }
+
+    @classmethod
+    def classify_consumption(cls, counterparty: str, remark: str) -> dict:
+        """对一笔消费交易进行多级分类。返回 {category, is_luxury, matched_brand}"""
+        combined = f"{counterparty} {remark}"
+        result = {"category": "其他消费", "is_luxury": False, "matched_brand": ""}
+
+        # 先检查高端品牌（优先级最高）
+        for brand in cls.LUXURY_BRANDS:
+            if brand.lower() in combined.lower():
+                result["category"] = "高端购物"
+                result["is_luxury"] = True
+                result["matched_brand"] = brand
+                return result
+
+        # 检查消费类别
+        for cat, keywords in cls.CATEGORY_KEYWORDS.items():
+            for kw in keywords:
+                if kw.lower() in combined.lower():
+                    result["category"] = cat
+                    return result
+
+        return result
+
+    @classmethod
+    def analyze(cls, transactions: list) -> dict:
+        """对全部消费交易进行画像统计"""
+        cats = defaultdict(lambda: {"count": 0, "total": 0.0})
+        luxury_count = 0
+        luxury_total = 0.0
+        luxury_brands = defaultdict(float)
+
+        for t in transactions:
+            if t.category != "consume":
+                continue
+            cp = t.counterparty or ""
+            rmk = t.remark or ""
+            info = cls.classify_consumption(cp, rmk)
+            cat = info["category"]
+            amt = abs(t.amount)
+
+            cats[cat]["count"] += 1
+            cats[cat]["total"] += amt
+
+            if info["is_luxury"]:
+                luxury_count += 1
+                luxury_total += amt
+                luxury_brands[info["matched_brand"]] += amt
+
+        return {
+            "by_category": {k: dict(v) for k, v in sorted(cats.items())},
+            "luxury_count": luxury_count,
+            "luxury_total": luxury_total,
+            "luxury_brands": sorted(luxury_brands.items(), key=lambda x: x[1], reverse=True),
+        }
+
+
+# ═══════════════════════════════════════════════════════════
+# 现金存取链配对
+# ═══════════════════════════════════════════════════════════
+
 class CashChainMatcher:
     """
     存取链配对算法（贪婪匹配）
@@ -589,7 +714,9 @@ class CardAnalyzer:
         self.cash_matcher = CashChainMatcher(max_days=cash_max_days)
         self.finance_matcher = FinanceMatcher(max_days=finance_max_days)
 
-    def analyze(self, card: str, name: str, transactions: List[Transaction]) -> CardReport:
+    def analyze(self, card: str, name: str, transactions: List[Transaction],
+                tenure_start: Optional[datetime] = None,
+                tenure_end: Optional[datetime] = None) -> CardReport:
         report = CardReport(card=card, name=name)
         report.total_records = len(transactions)
         report.all_transactions = transactions
@@ -696,7 +823,72 @@ class CardAnalyzer:
         # === Step 8: 可疑度打分 ===
         self._analyze_suspicion(report, transactions)
 
+        # === Step 9: 消费画像 ===
+        self._analyze_consumption(report, transactions)
+
+        # === Step 10: 任职期对比 ===
+        if tenure_start and tenure_end:
+            self._analyze_tenure(report, transactions, tenure_start, tenure_end)
+
         return report
+
+    def _analyze_tenure(self, report: CardReport, transactions: list,
+                        t_start: datetime, t_end: datetime):
+        """A3 任职期对比: 三段统计"""
+        report.has_tenure = True
+
+        def slice_stats(txs: list) -> dict:
+            if not txs:
+                return {"笔数": 0, "资金量": 0, "月均": 0, "消费": 0,
+                        "大额(≥5万)": 0, "深夜%": 0, "对手数": 0}
+            total = len(txs)
+            fund = sum(t.amount for t in txs)
+            consume = sum(abs(t.amount) for t in txs if t.category == "consume")
+            months = max(1, (max(t.date for t in txs) - min(t.date for t in txs)).days / 30)
+            large = sum(1 for t in txs if abs(t.amount) >= 50000)
+            night = sum(1 for t in txs if t.date.hour >= 22 or t.date.hour < 6)
+            cps = len(set((t.counterparty or "").strip() for t in txs))
+            return {
+                "笔数": total, "资金量": round(fund, 2), "月均": round(fund / months, 2),
+                "消费": round(consume, 2), "大额(≥5万)": large,
+                "深夜%": round(night / total * 100, 1) if total > 0 else 0,
+                "对手数": cps,
+            }
+
+        before = [t for t in transactions if t.date < t_start]
+        during = [t for t in transactions if t_start <= t.date <= t_end]
+        after = [t for t in transactions if t.date > t_end]
+
+        report.tenure_before = slice_stats(before)
+        report.tenure_during = slice_stats(during)
+        report.tenure_after = slice_stats(after)
+
+        report.log(f"\n--- 任职期对比 ---")
+        report.log(f"  任职期: {t_start.strftime('%Y-%m-%d')} ~ {t_end.strftime('%Y-%m-%d')}")
+        for label, data in [("任职前", report.tenure_before),
+                            ("任职中", report.tenure_during),
+                            ("任职后", report.tenure_after)]:
+            report.log(f"  {label}: {data['笔数']}笔 资金量{data['资金量']:,.0f} "
+                       f"月均{data['月均']:,.0f} 消费{data['消费']:,.0f} "
+                       f"大额{data['大额(≥5万)']}笔 深夜{data['深夜%']}%")
+
+    def _analyze_consumption(self, report: CardReport, transactions: list):
+        """A4 消费画像: 高端品牌检测 + 多级分类"""
+        cp = ConsumptionClassifier.analyze(transactions)
+        report.consume_by_category = cp["by_category"]
+        report.consume_luxury_count = cp["luxury_count"]
+        report.consume_luxury_total = cp["luxury_total"]
+        report.consume_luxury_brands = cp["luxury_brands"]
+
+        if cp["luxury_count"] > 0:
+            brands_str = ", ".join(
+                f"{b}({a:,.0f})" for b, a in cp["luxury_brands"][:5])
+            report.log(f"\n--- 消费画像 ---")
+            report.log(f"  高端消费: {cp['luxury_count']}笔 {cp['luxury_total']:,.2f}")
+            report.log(f"  命中品牌: {brands_str}")
+        for cat, v in cp["by_category"].items():
+            if v["total"] > 0:
+                report.log(f"  {cat}: {v['count']}笔 {v['total']:,.2f}")
 
     def _analyze_suspicion(self, report: CardReport, transactions: list):
         """A2-min 现金画像 + A5 可疑度打分 0-100"""
@@ -1022,11 +1214,12 @@ class CardAnalyzer:
 def analyze_bank_flow(transactions: List[Transaction],
                       card_col: str = "card",
                       cash_max_days: int = 30,
-                      finance_max_days: int = 365 * 3) -> AnalysisResult:
+                      finance_max_days: int = 365 * 3,
+                      tenure_start: Optional[datetime] = None,
+                      tenure_end: Optional[datetime] = None) -> AnalysisResult:
     """批量分析所有卡"""
     result = AnalysisResult()
 
-    # 按卡号分组
     card_groups = defaultdict(list)
     for tx in transactions:
         card_groups[tx.card].append(tx)
@@ -1034,7 +1227,9 @@ def analyze_bank_flow(transactions: List[Transaction],
     for card, txs in card_groups.items():
         name = txs[0].name if txs else ""
         analyzer = CardAnalyzer(cash_max_days=cash_max_days, finance_max_days=finance_max_days)
-        report = analyzer.analyze(card, name, txs)
+        report = analyzer.analyze(card, name, txs,
+                                  tenure_start=tenure_start,
+                                  tenure_end=tenure_end)
         result.reports.append(report)
         result.summary_steps.extend(report.steps)
 
