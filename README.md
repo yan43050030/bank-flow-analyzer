@@ -59,6 +59,68 @@ pip install -r requirements.txt
 python fund_analyzer.py
 ```
 
+## 多设备协作开发
+
+代码用 GitHub 同步，**真实案件数据绝不入库**。
+
+### 首次拉取（新设备）
+
+```bash
+git clone https://github.com/yan43050030/bank-flow-analyzer.git
+cd bank-flow-analyzer
+pip install -r requirements.txt
+```
+
+### 日常工作流
+
+```bash
+# 开始工作前 — 拉最新
+git pull --rebase origin main
+
+# 改代码 → 提交
+git add <具体文件名>           # 不要用 git add . / -A，避免误传数据
+git commit -m "feat: 描述改动"
+git push origin <分支名>
+
+# 切换设备前 — 务必先推送
+git status                     # 确认无未提交改动
+git push
+```
+
+### 数据隔离纪律
+
+| 类型 | 是否入库 | 存放位置 |
+|------|---------|---------|
+| 代码 (`.py`) | ✅ 入库 | 仓库内 |
+| 合成测试数据 (`test_*.csv`) | ✅ 入库 | 仓库内 |
+| 真实流水 (`*.xlsx`/`*.xls`) | ❌ 严禁 | 本地加密盘 `../case-data/` |
+| 导出结果 (`资金统计结果*.xlsx`) | ❌ 严禁 | 本地加密盘 |
+| 截图、证据 | ❌ 严禁 | 本地加密盘 |
+
+建议目录结构：
+
+```
+~/work/
+├── bank-flow-analyzer/        ← Git 跟踪（云端同步）
+└── case-data/                  ← 本地加密盘，绝不入 Git
+    ├── 2024-XX案/
+    │   ├── 流水原件.xlsx
+    │   └── 分析结果.xlsx
+    └── 2024-YY案/
+```
+
+### 多设备冲突处理
+
+如果两台设备都改了同一文件：
+
+```bash
+git pull --rebase origin main   # 先拉
+# 若有冲突，解决后：
+git add <冲突文件>
+git rebase --continue
+git push
+```
+
 ## 多主题支持
 
 4套主题可运行时切换：

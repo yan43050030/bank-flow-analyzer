@@ -249,18 +249,22 @@ class MainWindow(QMainWindow):
         else:
             r = self._result.reports[index - 1]
             peak = r.peak_funds
-            mf = r.fund_detail.get("=最小资金量(min_fund)", 0)
-            reason = f"取历史峰值 (峰值{peak:,.0f} > 最小{mf:,.0f})" if peak > mf \
-                else f"取最小资金量 (最小{mf:,.0f} >= 峰值{peak:,.0f})"
+            tp = r.fund_detail.get("=资金通量(throughput)", 0)
+            reason = f"取历史峰值 (峰值{peak:,.0f} > 通量{tp:,.0f})" if peak > tp \
+                else f"取资金通量 (通量{tp:,.0f} >= 峰值{peak:,.0f})"
             self._fund_header.set_fund_text(
                 f"💎 资金量: {r.fund_size:,.0f} 元  — {reason}")
+            cash_recycled = r.fund_detail.get("现金循环抵销", 0)
+            fin_recycled = r.fund_detail.get("理财循环抵销", 0)
+            tx_recycled = r.fund_detail.get("同户转账循环抵销", 0)
             self._fund_header.set_cards([
                 ("📈 历史峰值", f"{r.peak_funds:,.0f}"),
                 ("💰 卡内余额", f"{r.balance:,.0f}"),
                 ("📥 入账合计", f"{r.total_income:,.0f}"),
                 ("📤 出账合计", f"{r.total_expense:,.0f}"),
                 ("🛒 消费支出", f"{r.consume_total:,.0f}"),
-                ("💵 min(存现,取现)", f"{r.fund_detail.get('存取取小(min_cash)', 0):,.0f}"),
+                ("🔁 循环抵销(现/理/转)",
+                 f"{cash_recycled:,.0f}/{fin_recycled:,.0f}/{tx_recycled:,.0f}"),
                 ("⚖ 入-出", f"{r.total_income - r.total_expense:,.0f}"),
             ])
 

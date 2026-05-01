@@ -539,7 +539,7 @@ class CardAnalyzer:
         return report
 
     def _analyze_funds(self, report: CardReport, transactions: List[Transaction]):
-        """资金量分析：入/出校验 + 最小资金量估算"""
+        """资金量分析：入/出校验 + 资金通量估算（统一 FIFO 循环池）"""
         # ── 入账 / 出账合计 ──
         cash_in_total = sum(abs(t.amount) for t in transactions if t.category == "cash_in")
         cash_out_total = sum(abs(t.amount) for t in transactions if t.category == "cash_out")
@@ -570,88 +570,48 @@ class CardAnalyzer:
         report.balance_diff = expected_balance - actual_balance_plus_finance
         report.balance_verified = abs(report.balance_diff) < 0.02
 
-        # ── 最小资金量（最小值法）──
-        # 原则：
-        #   1. 消费全部计入（不重复）
-        #   2. 转出一般计入，但相同对手账户同时有转入→取 max(in,out) 避免重复计算
-        #   3. 存现/取现 取 min → 可能循环
-        #   4. 理财买入/赎回 取 min → 可能循环
+        # ── 资金通量（throughput）：累计真实流入卡的资金，去除循环 ──
+        # 三类循环统一处理（按时间顺序 FIFO 池）：
+        #   1. 现金循环：取款→进口袋池；存款→优先从口袋池消费（视为同笔钱回流）
+        #   2. 理财循环：买入→进理财池；赎回→优先从理财池消费（本金回流）
+        #   3. 同对手转账循环：转出→进对手池；同对手转入→优先从对手池消费
+        # 消费、纯工资/退款、跨对手转账 不会形成循环，直接计入新流入。
+        throughput, throughput_inflow, throughput_recycled = self._calc_throughput(transactions)
 
-        # 转出：按对手账户检测循环
-        transfer_txs = [t for t in transactions if t.category in ("transfer_in", "transfer_out")]
-        cp_in = defaultdict(float)
-        cp_out = defaultdict(float)
-        for t in transfer_txs:
-            cp = (t.counterparty or "").strip()
-            if not cp:
-                cp = "__无对手__"
-            if t.category == "transfer_in":
-                cp_in[cp] += abs(t.amount)
-            else:
-                cp_out[cp] += abs(t.amount)
+        report.transfer_recycled = throughput_recycled.get("transfer_recycled", 0.0)
+        report.fund_size = max(report.peak_funds, throughput)
 
-        transfer_fund = 0.0
-        recycled_pairs = []
-        all_cps = set(list(cp_in.keys()) + list(cp_out.keys()))
-        for cp in all_cps:
-            i = cp_in.get(cp, 0)
-            o = cp_out.get(cp, 0)
-            if i > 0 and o > 0:
-                # 同一对手有进有出 → 可能循环，取 max
-                transfer_fund += max(i, o)
-                recycled = min(i, o)
-                if recycled > 0:
-                    recycled_pairs.append((cp, i, o, max(i, o), recycled))
-            elif o > 0:
-                # 纯转出 → 全部计入
-                transfer_fund += o
-            elif i > 0:
-                # 纯转入（如工资）→ 不计入资金量（这是资金来源，非使用）
-                pass
-
-        report.transfer_recycled = sum(p[4] for p in recycled_pairs)
-
-        # ── 现金循环池算法 ──
-        # 取款→再存入 = 同一笔钱循环，避免 1000元存取10次算成10000
-        # 消费/转出后再存入 = 真新增（花出去的钱回不来）
-        cash_txs_sorted = sorted(
-            [t for t in transactions if t.category in ("cash_in", "cash_out")],
-            key=lambda t: t.date)
-        recycle_pool = 0.0
-        cash_new_money = 0.0
-        for t in cash_txs_sorted:
-            amt = abs(t.amount)
-            if t.category == "cash_out":
-                recycle_pool += amt
-            else:
-                from_pool = min(amt, recycle_pool)
-                recycle_pool -= from_pool
-                cash_new_money += amt - from_pool
-
-        cash_fund = cash_new_money
-        finance_fund = min(finance_buy_total, finance_sell_total)
-
-        min_fund_size = consume_total + transfer_fund + cash_fund + finance_fund
-        report.fund_size = max(report.peak_funds, min_fund_size)
+        cash_recycled = throughput_recycled.get("cash_recycled", 0.0)
+        finance_recycled = throughput_recycled.get("finance_recycled", 0.0)
+        transfer_recycled = throughput_recycled.get("transfer_recycled", 0.0)
 
         report.fund_detail = {
+            "存现新增(cash_in_new)": throughput_inflow.get("cash_in_new", 0.0),
+            "转入新增(transfer_in_new)": throughput_inflow.get("transfer_in_new", 0.0),
+            "理财收益(finance_profit)": throughput_inflow.get("finance_profit", 0.0),
             "消费(consume)": consume_total,
-            "转出去重(transfer_dedup)": transfer_fund,
-            f"现金新增(pool出{cash_out_total:,.0f}入{cash_in_total:,.0f})": cash_fund,
-            "理财取小(min_finance)": finance_fund,
-            "=最小资金量(min_fund)": min_fund_size,
+            "现金循环抵销": cash_recycled,
+            "理财循环抵销": finance_recycled,
+            "同户转账循环抵销": transfer_recycled,
+            "=资金通量(throughput)": throughput,
             "历史最高峰值(peak)": report.peak_funds,
             "=最终资金量(max)": report.fund_size,
+            # 兼容 main_window.py 的取值
+            "=最小资金量(min_fund)": throughput,
         }
-        report.fund_detail["#同户转入出_取大组数"] = len(recycled_pairs)
-        report.fund_detail["#同户转入出_抵销额"] = report.transfer_recycled
 
-        if report.peak_funds > min_fund_size:
-            peak_reason = f"历史峰值 {report.peak_funds:,.0f} > 最小资金量 {min_fund_size:,.0f}，说明该卡曾真实持有大额资金"
-        elif abs(report.peak_funds - min_fund_size) < 1:
-            peak_reason = f"历史峰值与最小资金量基本一致 ({report.peak_funds:,.0f})"
+        if report.peak_funds > throughput:
+            peak_reason = (
+                f"历史峰值 {report.peak_funds:,.0f} > 资金通量 {throughput:,.0f}，"
+                f"说明卡曾持有大额资金（可能为初始余额或同日多笔流入）"
+            )
+        elif abs(report.peak_funds - throughput) < 1:
+            peak_reason = f"历史峰值与资金通量基本一致 ({report.peak_funds:,.0f})"
         else:
-            peak_reason = f"最小资金量 {min_fund_size:,.0f} >= 历史峰值 {report.peak_funds:,.0f}，资金以消费/转出为主"
+            peak_reason = (
+                f"资金通量 {throughput:,.0f} >= 历史峰值 {report.peak_funds:,.0f}，"
+                f"资金多次流入流出（去重后真实经过此卡）"
+            )
 
         report.log(f"\n--- 资金量分析 ---")
         report.log(f"  入账合计: {report.total_income:,.2f}")
@@ -659,17 +619,90 @@ class CardAnalyzer:
         report.log(f"  入-出 = {expected_balance:,.2f}")
         report.log(f"  余额+未到期理财 = {actual_balance_plus_finance:,.2f}")
         report.log(f"  余额校验{'✓' if report.balance_verified else '✗ 差异=' + str(round(report.balance_diff, 2))}")
-        report.log(f"  现金循环池: 取款出{recycle_pool + cash_fund:,.0f} → 已回流{recycle_pool + cash_fund - cash_fund - recycle_pool:,.0f} → 剩余池{recycle_pool:,.0f} 新增资金{cash_fund:,.0f}")
+        report.log(f"  现金循环抵销: {cash_recycled:,.2f} (取款{cash_out_total:,.0f}↔存款{cash_in_total:,.0f})")
+        report.log(f"  理财循环抵销: {finance_recycled:,.2f} (买入{finance_buy_total:,.0f}↔赎回{finance_sell_total:,.0f})")
+        report.log(f"  同户转账循环抵销: {transfer_recycled:,.2f}")
         report.log(f"  历史峰值(A): {report.peak_funds:,.2f}")
-        report.log(f"  最小资金量(B): {min_fund_size:,.2f}")
-        report.log(f"    = 消费{consume_total:,.0f} + 转出贡献{transfer_fund:,.0f}"
-                   f" + 现金新增{cash_fund:,.0f} + min理财{finance_fund:,.0f}")
+        report.log(f"  资金通量(B): {throughput:,.2f}")
+        report.log(f"    = 存现新增{throughput_inflow.get('cash_in_new', 0):,.0f}"
+                   f" + 转入新增{throughput_inflow.get('transfer_in_new', 0):,.0f}"
+                   f" + 理财收益{throughput_inflow.get('finance_profit', 0):,.0f}")
         report.log(f"  最终资金量 max(A,B): {report.fund_size:,.2f}")
         report.log(f"  结论: {peak_reason}")
-        if recycled_pairs:
-            report.log(f"  同户转入出({len(recycled_pairs)}组，抵销{report.transfer_recycled:,.0f}):")
-            for cp, i, o, mx, rc in recycled_pairs[:10]:
-                report.log(f"    {cp[:30]}: 入{i:,.0f} 出{o:,.0f} → 取大{mx:,.0f}")
+
+    def _calc_throughput(
+        self, transactions: List[Transaction]
+    ) -> Tuple[float, Dict[str, float], Dict[str, float]]:
+        """
+        资金通量算法：累计真实流入卡的资金（去除循环）
+
+        按时间顺序遍历交易，维护三个 FIFO 池来识别"同一笔钱反复流通"：
+          - pocket_pool   : 已取出未存回的现金（取款进池→存款消费池）
+          - finance_pool  : 已买入未赎回的理财（买入进池→赎回消费池）
+          - transfer_pool : 同对手已转出未回款的金额（转出进池→同对手转入消费池）
+
+        每笔流入交易先抵销对应池中的额度（视为循环回流），剩余部分才算"新流入"。
+        消费、跨对手转账、不同载体之间的资金链 不形成循环。
+
+        返回: (throughput, inflow_detail, recycled_detail)
+        """
+        if not transactions:
+            return 0.0, {}, {}
+
+        sorted_txs = sorted(
+            transactions, key=lambda t: (t.date, getattr(t, "row_index", 0))
+        )
+
+        pocket_pool = 0.0          # 用户口袋的现金（取款流出后未回流）
+        finance_pool = 0.0         # 已买未赎的理财本金
+        transfer_pool: Dict[str, float] = defaultdict(float)  # 同对手未回款转出
+
+        throughput = 0.0
+        inflow = defaultdict(float)
+        recycled = defaultdict(float)
+
+        for tx in sorted_txs:
+            amt = abs(tx.amount)
+            cat = tx.category
+
+            if cat == "cash_in":
+                from_pool = min(amt, pocket_pool)
+                pocket_pool -= from_pool
+                new_money = amt - from_pool
+                throughput += new_money
+                inflow["cash_in_new"] += new_money
+                recycled["cash_recycled"] += from_pool
+
+            elif cat == "cash_out":
+                pocket_pool += amt
+
+            elif cat == "transfer_in":
+                cp = (tx.counterparty or "").strip() or "__无对手__"
+                from_pool = min(amt, transfer_pool[cp])
+                transfer_pool[cp] -= from_pool
+                new_money = amt - from_pool
+                throughput += new_money
+                inflow["transfer_in_new"] += new_money
+                recycled["transfer_recycled"] += from_pool
+
+            elif cat == "transfer_out":
+                cp = (tx.counterparty or "").strip() or "__无对手__"
+                transfer_pool[cp] += amt
+
+            elif cat == "finance_sell":
+                from_pool = min(amt, finance_pool)
+                finance_pool -= from_pool
+                new_money = amt - from_pool   # 超出本金的部分 = 收益
+                throughput += new_money
+                inflow["finance_profit"] += new_money
+                recycled["finance_recycled"] += from_pool
+
+            elif cat == "finance_buy":
+                finance_pool += amt
+
+            # consume: 钱花出去不会回，无需进池
+
+        return throughput, dict(inflow), dict(recycled)
 
     def _calc_peak(self, transactions: List[Transaction]) -> float:
         """计算历史最高资金（序列累计峰值）"""
