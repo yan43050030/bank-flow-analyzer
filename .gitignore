@@ -22,12 +22,54 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Test data (sample only)
-# test_bank_flow.csv
-
 # Logs
 *.log
 
 # Secrets
 .env
 *.key
+*.pem
+
+# ════════════════════════════════════════════════════════════
+# 真实案件数据 — 绝不入库
+# 默认拒绝所有 Excel/CSV，仅放行明确以 test_/sample_/demo_ 开头的合成数据
+# ════════════════════════════════════════════════════════════
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+!test_*.csv
+!test_*.xlsx
+!test_*.xls
+!sample_*.csv
+!sample_*.xlsx
+!demo_*.csv
+!demo_*.xlsx
+
+# 案件资料目录（任何包含这些关键词的目录都跳过）
+case-data/
+case_data/
+真实数据/
+案件资料/
+证据/
+证据材料/
+导出结果/
+分析结果/
+
+# 软件导出的统计结果
+资金统计结果*.xlsx
+*导出*.xlsx
+*分析报告*.pdf
+*分析报告*.docx
+
+# 截图与办案附件
+screenshots/
+attachments/
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.doc
+*.docx
+!docs/**/*.png
+!docs/**/*.jpg
