@@ -93,7 +93,7 @@ class SummaryTab(QWidget):
         headers = [
             "卡号", "姓名", "笔数", "入账", "出账", "入-出", "余额",
             "消费", "转出", "转入", "存现", "取现", "历史峰值", "资金量", "判定",
-            "对手数", "⇄双向", "HHI",
+            "对手数", "⇄双向", "HHI", "可疑度",
         ]
         self._table.setColumnCount(len(headers))
         self._table.setHorizontalHeaderLabels(headers)
@@ -114,6 +114,7 @@ class SummaryTab(QWidget):
                 str(r.cp_total_players),
                 str(r.cp_bi_count),
                 hhi_s,
+                f"{r.suspicion_score:.0f} {r.suspicion_label}",
             ]
             for j, v in enumerate(vals):
                 item = QTableWidgetItem(v)

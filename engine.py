@@ -100,6 +100,16 @@ class CardReport:
     cp_hhi: float = 0.0            # 赫芬达尔集中度
     cp_total_players: int = 0      # 对手总数
 
+    # ── 可疑度打分 (A5) ──
+    suspicion_score: float = 0.0        # 0-100
+    suspicion_label: str = ""           # 低/中/高
+    suspicion_detail: Dict[str, float] = field(default_factory=dict)
+
+    # ── 任职期对比 (A3) ──
+    tenure_before: dict = field(default_factory=dict)
+    tenure_during: dict = field(default_factory=dict)
+    tenure_after: dict = field(default_factory=dict)
+
     # ── 资金量分析（最小值法）──
     total_income: float = 0.0          # 入账合计
     total_expense: float = 0.0         # 出账合计
@@ -644,7 +654,98 @@ class CardAnalyzer:
         # === Step 7: 对手分析 ===
         self._analyze_counterparties(report, transactions)
 
+        # === Step 8: 可疑度打分 ===
+        self._analyze_suspicion(report, transactions)
+
         return report
+
+    def _analyze_suspicion(self, report: CardReport, transactions: list):
+        """A2-min 现金画像 + A5 可疑度打分 0-100"""
+        if not transactions:
+            return
+
+        # ── A2-min: 现金画像 ──
+        int_pref = 0       # 整数偏好次数
+        near_50k = 0       # 5万阈值附近
+        near_200k = 0      # 20万阈值附近
+        night_txn = 0      # 深夜交易 (22:00-06:00)
+        weekend_txn = 0    # 周末交易
+        total_txn = len(transactions)
+
+        for t in transactions:
+            amt = abs(t.amount)
+            # 整数偏好: 49000, 99000, 199000 等
+            if amt >= 10000 and (amt % 10000 == 0 or amt % 1000 == 0):
+                if amt in (49000, 99000, 199000, 490000, 990000):
+                    int_pref += 1
+                elif amt >= 45000 and amt <= 51000:
+                    near_50k += 1
+                    int_pref += 0.5
+                elif amt >= 190000 and amt <= 210000:
+                    near_200k += 1
+                    int_pref += 0.5
+            # 深夜交易
+            hour = t.date.hour
+            if 22 <= hour or hour < 6:
+                night_txn += 1
+            # 周末
+            if t.date.weekday() >= 5:
+                weekend_txn += 1
+
+        night_ratio = night_txn / total_txn if total_txn > 0 else 0
+        weekend_ratio = weekend_txn / total_txn if total_txn > 0 else 0
+
+        # ── A5: 可疑度打分 ──
+        score = 0.0
+        detail = {}
+
+        # 1. 整数偏好 (20分)
+        ip_score = min(20, int_pref * 3)
+        score += ip_score; detail["整数偏好"] = round(ip_score, 1)
+
+        # 2. 阈值规避 (20分): 5万/20万附近交易
+        th_score = min(20, (near_50k + near_200k * 2) * 4)
+        score += th_score; detail["阈值规避"] = round(th_score, 1)
+
+        # 3. 深夜交易 (15分)
+        nt_score = min(15, night_ratio * 100)
+        score += nt_score; detail["深夜交易"] = round(nt_score, 1)
+
+        # 4. 双向对手 (15分): 双向对手多 → 疑似过账
+        bi_score = min(15, report.cp_bi_count * 3)
+        score += bi_score; detail["双向对手"] = round(bi_score, 1)
+
+        # 5. 集中度 (15分): HHI > 2500 → 高度集中
+        hhi_score = min(15, (report.cp_hhi / 2500) * 15) if report.cp_hhi > 0 else 0
+        score += hhi_score; detail["对手集中度"] = round(hhi_score, 1)
+
+        # 6. 消费/收入比异常 (15分): 消费远超收入
+        income = report.total_income
+        consume = report.consume_total
+        if income > 0:
+            cr = consume / income
+            ci_score = min(15, max(0, (cr - 0.5) * 15))
+        else:
+            ci_score = 10
+        score += ci_score; detail["消费收入比"] = round(ci_score, 1)
+
+        score = min(100, round(score, 1))
+        report.suspicion_score = score
+        report.suspicion_detail = detail
+
+        if score <= 30:
+            report.suspicion_label = "🟢 低"
+        elif score <= 60:
+            report.suspicion_label = "🟡 中"
+        else:
+            report.suspicion_label = "🔴 高"
+
+        report.log(f"\n--- 可疑度打分 ---")
+        report.log(f"  整数偏好: {int_pref:.0f}次 深夜交易: {night_txn}次({night_ratio:.1%})")
+        report.log(f"  阈值规避: {near_50k:.0f}+{near_200k:.0f}次 周末: {weekend_txn}次({weekend_ratio:.1%})")
+        report.log(f"  评分: {score:.0f}/100 → {report.suspicion_label}")
+        for k, v in detail.items():
+            report.log(f"    {k}: {v:.0f}分")
 
     def _analyze_counterparties(self, report: CardReport, transactions: list):
         """对手分析：Top N / 对公对私 / 双向检测 / 集中度"""

@@ -264,13 +264,14 @@ class MainWindow(QMainWindow):
             self._fund_header.set_cards([
                 ("📈 历史峰值", f"{r.peak_funds:,.0f}"),
                 ("💰 卡内余额", f"{r.balance:,.0f}"),
-                ("📥 入账合计", f"{r.total_income:,.0f}"),
-                ("📤 出账合计", f"{r.total_expense:,.0f}"),
-                ("🔁 循环抵销(现/理/转)",
-                 f"{cash_recycled:,.0f}/{fin_recycled:,.0f}/{tx_recycled:,.0f}"),
-                ("🔍 对手分析",
-                 f"{r.cp_total_players}人 对公{r.cp_business_count} ⇄{r.cp_bi_count} HHI{hhi_level}"),
                 ("🛒 消费", f"{r.consume_total:,.0f}"),
+                ("🔁 循环抵销",
+                 f"{cash_recycled:,.0f}/{fin_recycled:,.0f}/{tx_recycled:,.0f}"),
+                ("🔍 对手",
+                 f"{r.cp_total_players}人 ⇄{r.cp_bi_count} HHI{hhi_level}"),
+                ("⚠ 可疑度",
+                 f"{r.suspicion_score:.0f}分 {r.suspicion_label}"),
+                ("⚖ 入-出", f"{r.total_income - r.total_expense:,.0f}"),
             ])
 
     # ═══ 导出 ═══════════════════════════════════════════
