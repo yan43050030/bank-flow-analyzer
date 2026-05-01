@@ -108,7 +108,7 @@ class SummaryTab(QWidget):
                 f"{r.income_detail.get('存现(cash_in)', 0):,.0f}",
                 f"{r.expense_detail.get('取现(cash_out)', 0):,.0f}",
                 f"{r.peak_funds:,.0f}", f"{r.fund_size:,.0f}",
-                "取峰值" if r.peak_funds > r.fund_size else "取最小",
+                "取峰值" if r.peak_funds >= r.fund_detail.get("=资金通量(throughput)", 0) else "取通量",
             ]
             for j, v in enumerate(vals):
                 item = QTableWidgetItem(v)
