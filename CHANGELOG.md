@@ -1,5 +1,58 @@
 # Changelog
 
+## [3.0.1] - 2026-05-01
+
+### 修复（v2.4-3.0 审查发现的 7 个缺陷）
+
+- **Bug 1（致命）**：B3 黑名单关键词未接入打分。`blacklist_hits` 计数器在 v2.5 引入但从未加入 `score`，导致用户配置的"博彩/虚拟币"等关键词完全无效。新增 `blacklist_weight=15` 权重，命中按 5 分/次累加封顶
+- **Bug 2**：C1 代持识别误判死户卡。`total_out=0` 时默认 `non_consume_ratio=1.0` 让仅工资入账的死户卡评 70 分🔴。新增数据量门槛：流出 < 3 笔或合计 < 1 元时不评分，标记"—（数据不足）"
+- **Bug 3**：A5 灵敏度回归。v2.5 重写整数偏好检测后 50000（恰好等于阈值）不再触发，让经典反洗钱场景从 60🔴 降到 56🟡。整数偏好命中表新增 `aml_lo / aml_hi`（即 50000/200000 自身）和 100000/500000 等倍数
+- **Bug 4**：阈值规避检测被 large_threshold 绑定（设计悖论）。`SuspicionConfig` 新增 `AML_THRESHOLDS=(50000, 200000)` 法定固定值，与用户可调的 `large_threshold` 解耦。`large_threshold` 仅用于"大额标识"统计，反洗钱阈值规避检测永远基于法定值
+- **Bug 5**：A3 任职期"资金量"语义错误。`sum(t.amount)` 是净流向（受消费/转出冲销），改为调用 `_calc_throughput()` 得到真实资金通量
+- **Bug 6**：C1 工资关键词列表含占位符"自定义"。会把 `raw_type` 含此词的任意交易误判为工资。删除并补全为标准列表
+- **Bug 7**：A4 万豪/希尔顿/丽思卡尔顿等酒店品牌被归"高端购物"。重写 `classify_consumption`：先按类别分类（酒店住宿/餐饮等），再独立标记 `is_luxury`，两个维度正交
+
+### 新增
+- `SuspicionConfig.AML_THRESHOLDS`、`SuspicionConfig.blacklist_weight`
+- 6 个新单元测试场景（test_scenario_14~19）覆盖每个 bug 的回归路径
+
+### 文档
+- ROADMAP.md：B1 标 "⏳ 待实现"，纠正 v2.5.0 commit 标题中"B1 基础"的错误宣告
+- CHANGELOG.md：补全 [2.4.0] / [2.5.0] / [3.0.0] 段（v2.4-3.0 之前未记录）
+
+## [3.0.0] - 2026-05-01
+
+### 新增（ROADMAP C 组）
+- **C1 代持卡识别**：S5 过账模式 + S6 单一受益人 + 收入模式 + 消费缺位 → 0-100 分代持嫌疑评分
+- **C2 证据包导出**：`generate_report()` 生成单卡 HTML 调查报告（含资金概览/可疑度/代持/Top10 对手/消费画像/任职期对比）；UI 新增「📄 导出证据报告 (HTML)」按钮
+
+### 数据模型
+- `CardReport.nominee_score / nominee_label / nominee_signals / nominee_beneficiary`
+- `CardReport.has_tenure / tenure_before / tenure_during / tenure_after`
+- `CardReport.consume_by_category / consume_luxury_count / consume_luxury_total / consume_luxury_brands`
+
+## [2.5.0] - 2026-05-01
+
+### 新增
+- **B3 可调阈值规则引擎**：`SuspicionConfig` dataclass 支持调阈值（大额/深夜/HHI/黑名单/各项权重）
+- UI 左侧面板新增「可疑度阈值 (B3)」配置区：大额阈值滑块、深夜时段设置、对手黑名单输入
+
+### 已知问题（在 [3.0.1] 修复）
+- 黑名单关键词命中数被检测但未接入打分（Bug 1）
+- 阈值规避检测被 large_threshold 绑定（Bug 4）
+- commit message 提及"B1 多银行合并基础"但代码未实现（Issue 8）
+
+## [2.4.0] - 2026-05-01
+
+### 新增（ROADMAP A 组扩展）
+- **A3 任职期对比**：用户输入任职起止日期，自动对比"任职前/任职中/任职后"三段
+- **A4 消费画像**：`ConsumptionClassifier` 多级消费分类（餐饮/酒店/旅游/医疗/教育/数码等 10+ 类） + 高端品牌识别（爱马仕/卡地亚/劳力士/茅台/万豪 等 100+ 品牌库）
+- `analyze_bank_flow()` 接受 `tenure_start / tenure_end / suspicion_config` 参数
+
+### 已知问题（在 [3.0.1] 修复）
+- 任职期"资金量"实际是 sum(amount) 净流向（Bug 5）
+- 万豪等酒店品牌被分类为"高端购物"而非"酒店住宿"（Bug 7）
+
 ## [2.3.0] - 2026-05-01
 
 ### 新增（ROADMAP A 组完成）

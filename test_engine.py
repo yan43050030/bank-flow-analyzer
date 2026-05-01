@@ -344,9 +344,163 @@ def test_scenario_13_high_suspicion_full():
     print(f"可疑度: {r.suspicion_score:.0f} {r.suspicion_label}")
     print(f"明细: {r.suspicion_detail}")
 
-    assert r.suspicion_score >= 55, f"高可疑应≥55: {r.suspicion_score}"
-    assert "中" in r.suspicion_label or "高" in r.suspicion_label
+    # Bug 3 修复后恢复原断言：高可疑场景应能上 🔴 高（≥60）
+    assert r.suspicion_score >= 60, f"高可疑应≥60: {r.suspicion_score}"
+    assert "高" in r.suspicion_label, f"label 应为高: {r.suspicion_label}"
     print("✅ 测试13通过")
+
+
+def test_scenario_14_blacklist_scoring():
+    """Bug 1: 黑名单关键词应实际接入打分"""
+    print("\n" + "=" * 60)
+    print("测试14: 黑名单关键词接入打分（Bug 1）")
+    print("=" * 60)
+    from engine import SuspicionConfig
+
+    # 不配黑名单 — 基线分
+    txs_base = [
+        make_tx("2024-01-01", "6222", "转账", -50000, cp="某某博彩公司"),
+        make_tx("2024-01-02", "6222", "转账", -50000, cp="正常公司"),
+    ]
+    r0 = analyze_bank_flow(txs_base).reports[0]
+    base_score = r0.suspicion_score
+
+    # 配博彩黑名单 — 应升分
+    cfg = SuspicionConfig(blacklist_keywords=["博彩", "虚拟币"])
+    r1 = analyze_bank_flow(txs_base, suspicion_config=cfg).reports[0]
+    print(f"基线分: {base_score:.0f}, 配黑名单后: {r1.suspicion_score:.0f}")
+    print(f"明细: {r1.suspicion_detail}")
+
+    bl_score = r1.suspicion_detail.get("黑名单命中", 0)
+    assert bl_score > 0, f"黑名单评分应>0: {bl_score}"
+    assert r1.suspicion_score > base_score, \
+        f"配置黑名单后总分应升: {base_score} → {r1.suspicion_score}"
+    print("✅ 测试14通过")
+
+
+def test_scenario_15_nominee_dead_card():
+    """Bug 2: 死户卡（仅工资入账，无任何流出）不应被评高代持嫌疑"""
+    print("\n" + "=" * 60)
+    print("测试15: 死户卡代持评分豁免（Bug 2）")
+    print("=" * 60)
+
+    txs = [
+        make_tx("2024-01-15", "6222", "工资", 8000, cp="某某公司"),
+        make_tx("2024-02-15", "6222", "工资", 8000, cp="某某公司"),
+        make_tx("2024-03-15", "6222", "工资", 8000, cp="某某公司"),
+    ]
+    r = analyze_bank_flow(txs).reports[0]
+    print(f"代持评分: {r.nominee_score:.0f} {r.nominee_label}")
+    print(f"信号: {r.nominee_signals}")
+
+    assert r.nominee_score == 0, f"死户卡不应评分: {r.nominee_score}"
+    assert "数据不足" in r.nominee_label, f"应标数据不足: {r.nominee_label}"
+    print("✅ 测试15通过")
+
+
+def test_scenario_16_real_nominee_pattern():
+    """Bug 2 反向：真实代持模式仍应识别为高度疑似"""
+    print("\n" + "=" * 60)
+    print("测试16: 真实代持模式（工资入→全部转给同一受益人）")
+    print("=" * 60)
+
+    txs = []
+    for m in range(1, 7):
+        txs.append(make_tx(f"2024-{m:02d}-15", "6222", "工资", 10000, cp="某某公司"))
+        txs.append(make_tx(f"2024-{m:02d}-16", "6222", "转账", -10000, cp="王大老板"))
+    r = analyze_bank_flow(txs).reports[0]
+    print(f"代持评分: {r.nominee_score:.0f} {r.nominee_label}")
+    print(f"受益人: {r.nominee_beneficiary}")
+
+    assert r.nominee_score >= 80, f"真实代持应≥80: {r.nominee_score}"
+    assert "高" in r.nominee_label or "疑似" in r.nominee_label
+    assert "王大老板" in r.nominee_beneficiary
+    print("✅ 测试16通过")
+
+
+def test_scenario_17_aml_threshold_decoupled():
+    """Bug 4: 用户改 large_threshold 不应影响法定反洗钱阈值检测"""
+    print("\n" + "=" * 60)
+    print("测试17: AML 阈值与 large_threshold 解耦（Bug 4）")
+    print("=" * 60)
+    from engine import SuspicionConfig
+
+    txs = [
+        make_tx("2024-01-01", "6222", "存款", 49000),
+        make_tx("2024-01-02", "6222", "存款", 49000),
+        make_tx("2024-01-03", "6222", "存款", 49000),
+    ]
+    # 默认配置 — 应捕获 49000 阈值规避
+    r1 = analyze_bank_flow(txs).reports[0]
+    th1 = r1.suspicion_detail.get("阈值规避", 0)
+    print(f"默认阈值: 阈值规避={th1:.0f}")
+
+    # 用户把 large_threshold 改到 1万 — AML 检测仍基于法定 5万
+    cfg = SuspicionConfig(large_threshold=10000)
+    r2 = analyze_bank_flow(txs, suspicion_config=cfg).reports[0]
+    th2 = r2.suspicion_detail.get("阈值规避", 0)
+    print(f"large=1万: 阈值规避={th2:.0f} (应仍捕获 49000)")
+
+    assert th1 > 0 and th2 > 0, \
+        f"AML 检测不应被 large_threshold 影响: th1={th1} th2={th2}"
+    assert th1 == th2, f"阈值规避得分应相同: {th1} vs {th2}"
+    print("✅ 测试17通过")
+
+
+def test_scenario_18_tenure_uses_throughput():
+    """Bug 5: A3 任职期"资金量"应是 throughput 而非 sum(amount)"""
+    print("\n" + "=" * 60)
+    print("测试18: 任职期资金量用 throughput（Bug 5）")
+    print("=" * 60)
+
+    # 任职期 6 个月：每月入 11万 + 出 11万（净流向≈0，但实际经过 66万）
+    txs = []
+    for m in range(1, 7):
+        txs.append(make_tx(f"2024-{m:02d}-10", "6222", "转账", 110000, cp="A"))
+        txs.append(make_tx(f"2024-{m:02d}-20", "6222", "转账", -110000, cp="B"))
+    # 任职前后零交易，为了创建三段须有任职前后数据
+    txs = [make_tx("2023-12-01", "6222", "工资", 10000, cp="公司")] + txs + \
+          [make_tx("2024-08-01", "6222", "工资", 10000, cp="公司")]
+
+    result = analyze_bank_flow(
+        txs,
+        tenure_start=datetime(2024, 1, 1),
+        tenure_end=datetime(2024, 6, 30),
+    )
+    r = result.reports[0]
+    during_fund = r.tenure_during.get("资金量", 0)
+    print(f"任职中资金量: {during_fund:,.0f}")
+    print(f"  (sum(amount) ≈ 0；throughput 应反映 6 笔进+6 笔出 ≈ 66万 或 110万跨对手新流入)")
+
+    # throughput 算法：跨对手转账不形成循环，所以 6 笔流入 = 66万
+    assert during_fund >= 600000, \
+        f"任职期资金量应反映真实通量(≥66万)，不是净流向: {during_fund}"
+    print("✅ 测试18通过")
+
+
+def test_scenario_19_hotel_classification():
+    """Bug 7: 万豪/希尔顿应归"酒店住宿"，并保留 luxury 标签"""
+    print("\n" + "=" * 60)
+    print("测试19: 酒店品牌分类（Bug 7）")
+    print("=" * 60)
+    from engine import ConsumptionClassifier
+
+    cases = [
+        ("万豪酒店", "酒店住宿", True),
+        ("希尔顿", "酒店住宿", True),
+        ("丽思卡尔顿", "酒店住宿", True),
+        ("爱马仕", "高端购物", True),    # 无类别标签，仍归高端购物
+        ("Costco超市", "日用百货", False),
+        ("星巴克", "餐饮", False),
+    ]
+    for name, expect_cat, expect_luxury in cases:
+        info = ConsumptionClassifier.classify_consumption(name, "")
+        print(f"  {name:12s} → 类别={info['category']:8s}, luxury={info['is_luxury']}")
+        assert info["category"] == expect_cat, \
+            f"{name}: 类别错误 期望{expect_cat}, 实际{info['category']}"
+        assert info["is_luxury"] == expect_luxury, \
+            f"{name}: luxury错误 期望{expect_luxury}, 实际{info['is_luxury']}"
+    print("✅ 测试19通过")
 
 
 if __name__ == "__main__":
@@ -363,5 +517,11 @@ if __name__ == "__main__":
     test_scenario_11_threshold_avoidance()
     test_scenario_12_normal_user_low_suspicion()
     test_scenario_13_high_suspicion_full()
+    test_scenario_14_blacklist_scoring()
+    test_scenario_15_nominee_dead_card()
+    test_scenario_16_real_nominee_pattern()
+    test_scenario_17_aml_threshold_decoupled()
+    test_scenario_18_tenure_uses_throughput()
+    test_scenario_19_hotel_classification()
     print("\n" + "=" * 60)
     print("🎉 所有测试完成")
