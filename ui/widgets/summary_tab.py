@@ -93,12 +93,14 @@ class SummaryTab(QWidget):
         headers = [
             "卡号", "姓名", "笔数", "入账", "出账", "入-出", "余额",
             "消费", "转出", "转入", "存现", "取现", "历史峰值", "资金量", "判定",
+            "对手数", "⇄双向", "HHI",
         ]
         self._table.setColumnCount(len(headers))
         self._table.setHorizontalHeaderLabels(headers)
         self._table.setRowCount(len(self._reports))
 
         for i, r in enumerate(self._reports):
+            hhi_s = f"{r.cp_hhi:.0f}" if r.cp_hhi > 0 else "-"
             vals = [
                 r.card[-24:], r.name, str(r.total_records),
                 f"{r.total_income:,.0f}", f"{r.total_expense:,.0f}",
@@ -109,6 +111,9 @@ class SummaryTab(QWidget):
                 f"{r.expense_detail.get('取现(cash_out)', 0):,.0f}",
                 f"{r.peak_funds:,.0f}", f"{r.fund_size:,.0f}",
                 "取峰值" if r.peak_funds >= r.fund_detail.get("=资金通量(throughput)", 0) else "取通量",
+                str(r.cp_total_players),
+                str(r.cp_bi_count),
+                hhi_s,
             ]
             for j, v in enumerate(vals):
                 item = QTableWidgetItem(v)

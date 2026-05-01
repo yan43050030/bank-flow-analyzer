@@ -90,6 +90,16 @@ class CardReport:
     # 原始分类交易
     all_transactions: List[Transaction] = field(default_factory=list)
 
+    # ── 对手分析 ──
+    cp_top_amount: list = field(default_factory=list)   # [(name, account, in, out, count, is_biz, is_bi), ...]
+    cp_top_count: list = field(default_factory=list)
+    cp_top_net: list = field(default_factory=list)
+    cp_business_count: int = 0
+    cp_personal_count: int = 0
+    cp_bi_count: int = 0           # 双向对手数
+    cp_hhi: float = 0.0            # 赫芬达尔集中度
+    cp_total_players: int = 0      # 对手总数
+
     # ── 资金量分析（最小值法）──
     total_income: float = 0.0          # 入账合计
     total_expense: float = 0.0         # 出账合计
@@ -223,6 +233,101 @@ class TransactionClassifier:
             return "transfer_out"
         else:
             return "transfer_in"
+
+
+# ═══════════════════════════════════════════════════════════
+# 对手分析
+# ═══════════════════════════════════════════════════════════
+
+class CounterpartyAnalyzer:
+    """从交易列表中提取对手统计：Top N / 对公对私 / 双向检测 / 集中度"""
+
+    # 对公关键词
+    _BIZ_KEYWORDS = [
+        "公司", "有限", "股份", "厂", "局", "委", "院", "校",
+        "中心", "支行", "分理处", "储蓄所", "营业部", "联社",
+        "银行", "保险", "政府", "办事", "管理", "办公室",
+        "财务", "支付", "科技", "信息", "服务", "国际旅行",
+        "信用", "合作", "运行", "核算", "专用户", "过渡户",
+        "零余额", "工资", "代发", "代付", "代扣", "批量",
+        "商务", "酒店", "餐饮", "百货", "商贸", "贸易",
+        "实业", "集团", "投资", "建设", "工程", "地产",
+    ]
+
+    _BIZ_EXCLUDE = [
+        "张三", "李四", "王五",  # 防误判（常见个人名）
+    ]
+
+    @classmethod
+    def analyze(cls, transactions: list) -> dict:
+        """
+        返回:
+        {
+            'entries': [(name, account, in_amt, out_amt, count, is_biz, is_bi), ...] 按金额降序
+            'total_players': int,
+            'business_count': int,
+            'personal_count': int,
+            'bidirectional_count': int,
+            'hhi': float,
+        }
+        """
+        if not transactions:
+            return {
+                "entries": [], "total_players": 0,
+                "business_count": 0, "personal_count": 0,
+                "bidirectional_count": 0, "hhi": 0.0,
+            }
+
+        cp_map = defaultdict(lambda: {"in": 0.0, "out": 0.0, "count": 0, "account": ""})
+        for t in transactions:
+            name = (t.counterparty or "").strip()
+            if not name:
+                name = "__无对手名称__"
+            key = name
+            cp_map[key]["count"] += 1
+            cp_map[key]["account"] = cp_map[key]["account"] or str(
+                getattr(t, "counterparty_account", "")) if hasattr(t, "counterparty_account") else ""
+            if t.amount > 0:
+                cp_map[key]["in"] += t.amount
+            else:
+                cp_map[key]["out"] += abs(t.amount)
+
+        entries = []
+        for name, v in cp_map.items():
+            is_biz = cls._is_business(name)
+            is_bi = v["in"] > 0.01 and v["out"] > 0.01
+            entries.append((
+                name, v["account"],
+                round(v["in"], 2), round(v["out"], 2),
+                v["count"], is_biz, is_bi,
+            ))
+
+        entries.sort(key=lambda e: e[2] + e[3], reverse=True)
+
+        total_flow = sum(e[2] + e[3] for e in entries)
+        hhi = sum((e[2] + e[3]) ** 2 for e in entries) / (total_flow ** 2) * 10000 if total_flow > 0 else 0
+
+        biz_count = sum(1 for e in entries if e[5])
+        bi_count = sum(1 for e in entries if e[6])
+
+        return {
+            "entries": entries,
+            "total_players": len(entries),
+            "business_count": biz_count,
+            "personal_count": len(entries) - biz_count,
+            "bidirectional_count": bi_count,
+            "hhi": round(hhi, 1),
+        }
+
+    @classmethod
+    def _is_business(cls, name: str) -> bool:
+        for ex in cls._BIZ_EXCLUDE:
+            if ex in name:
+                return False
+        for kw in cls._BIZ_KEYWORDS:
+            if kw in name:
+                return True
+        return False
 
 
 # ═══════════════════════════════════════════════════════════
@@ -533,10 +638,36 @@ class CardAnalyzer:
         report.log(f"  存取经过: {report.cash_paired:,.2f}")
         report.log(f"  理财获利: {report.finance_profit:,.2f}")
 
-        # === Step 6: 资金量分析（最小值法）===
+        # === Step 6: 资金量分析 ===
         self._analyze_funds(report, transactions)
 
+        # === Step 7: 对手分析 ===
+        self._analyze_counterparties(report, transactions)
+
         return report
+
+    def _analyze_counterparties(self, report: CardReport, transactions: list):
+        """对手分析：Top N / 对公对私 / 双向检测 / 集中度"""
+        cp = CounterpartyAnalyzer.analyze(transactions)
+        entries = cp["entries"]
+        report.cp_top_amount = entries[:10]
+        report.cp_top_count = sorted(entries, key=lambda e: e[4], reverse=True)[:10]
+        report.cp_top_net = sorted(entries, key=lambda e: abs(e[2] - e[3]), reverse=True)[:10]
+        report.cp_business_count = cp["business_count"]
+        report.cp_personal_count = cp["personal_count"]
+        report.cp_bi_count = cp["bidirectional_count"]
+        report.cp_hhi = cp["hhi"]
+        report.cp_total_players = cp["total_players"]
+
+        report.log(f"\n--- 对手分析 ---")
+        report.log(f"  对手总数: {cp['total_players']} (对公{cp['business_count']} / 个人{cp['personal_count']})")
+        report.log(f"  双向对手: {cp['bidirectional_count']}个")
+        report.log(f"  集中度HHI: {cp['hhi']:.0f} (<1000分散 / >2500集中)")
+        for e in entries[:10]:
+            tag = ""
+            if e[5]: tag += "对公"
+            if e[6]: tag += "⇄"
+            report.log(f"  {e[0][:30]:30s} 入{e[2]:>12,.0f} 出{e[3]:>12,.0f}  #{e[4]:>4d}  {tag}")
 
     def _analyze_funds(self, report: CardReport, transactions: List[Transaction]):
         """资金量分析：入/出校验 + 资金通量估算（统一 FIFO 循环池）"""

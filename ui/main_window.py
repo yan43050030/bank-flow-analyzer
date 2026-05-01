@@ -257,15 +257,20 @@ class MainWindow(QMainWindow):
             cash_recycled = r.fund_detail.get("现金循环抵销", 0)
             fin_recycled = r.fund_detail.get("理财循环抵销", 0)
             tx_recycled = r.fund_detail.get("同户转账循环抵销", 0)
+            hhi_level = (
+                "高度集中" if r.cp_hhi > 2500 else
+                ("中度集中" if r.cp_hhi > 1000 else "分散")
+            ) if r.cp_hhi > 0 else "-"
             self._fund_header.set_cards([
                 ("📈 历史峰值", f"{r.peak_funds:,.0f}"),
                 ("💰 卡内余额", f"{r.balance:,.0f}"),
                 ("📥 入账合计", f"{r.total_income:,.0f}"),
                 ("📤 出账合计", f"{r.total_expense:,.0f}"),
-                ("🛒 消费支出", f"{r.consume_total:,.0f}"),
                 ("🔁 循环抵销(现/理/转)",
                  f"{cash_recycled:,.0f}/{fin_recycled:,.0f}/{tx_recycled:,.0f}"),
-                ("⚖ 入-出", f"{r.total_income - r.total_expense:,.0f}"),
+                ("🔍 对手分析",
+                 f"{r.cp_total_players}人 对公{r.cp_business_count} ⇄{r.cp_bi_count} HHI{hhi_level}"),
+                ("🛒 消费", f"{r.consume_total:,.0f}"),
             ])
 
     # ═══ 导出 ═══════════════════════════════════════════
