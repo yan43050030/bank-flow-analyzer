@@ -26,17 +26,17 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          pyinstaller --noconfirm --windowed --name "银行流水资金统计" --add-data "ui/themes;ui/themes" fund_analyzer.py
+          pyinstaller --noconfirm --clean --windowed --name BankFlowAnalyzer --add-data "ui/themes;ui/themes" --hidden-import matplotlib.backends.backend_qtagg --exclude-module PyQt6 --exclude-module PyQt5 fund_analyzer.py
 
       - name: Create ZIP archive
         run: |
-          Compress-Archive -Path "dist/银行流水资金统计/*" -DestinationPath "银行流水资金统计-windows-x64.zip"
+          Compress-Archive -Path "dist/BankFlowAnalyzer/*" -DestinationPath BankFlowAnalyzer-windows-x64.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-build
-          path: 银行流水资金统计-windows-x64.zip
+          path: BankFlowAnalyzer-windows-x64.zip
 
   # ── macOS 构建 ────────────────────────────────────
   build-macos:
@@ -57,17 +57,17 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          pyinstaller --noconfirm --windowed --name "银行流水资金统计" --add-data "ui/themes:ui/themes" fund_analyzer.py
+          pyinstaller --noconfirm --clean --windowed --name BankFlowAnalyzer --add-data "ui/themes:ui/themes" --hidden-import matplotlib.backends.backend_qtagg --exclude-module PyQt6 --exclude-module PyQt5 fund_analyzer.py
 
       - name: Create DMG
         run: |
-          hdiutil create -volname "银行流水资金统计" -srcfolder "dist/银行流水资金统计.app" -ov -format UDZO "银行流水资金统计-macos.dmg"
+          hdiutil create -volname BankFlowAnalyzer -srcfolder "dist/BankFlowAnalyzer.app" -ov -format UDZO BankFlowAnalyzer-macos.dmg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: macos-build
-          path: 银行流水资金统计-macos.dmg
+          path: BankFlowAnalyzer-macos.dmg
 
   # ── 发布 Release ─────────────────────────────────
   release:
@@ -100,13 +100,21 @@ jobs:
           body: |
             银行流水资金统计工具 ${{ steps.version.outputs.VERSION }}
 
+            ### v2.1.0 更新内容
+            - PySide6 框架，模块化 UI 架构
+            - 多卡分页展示 + 汇总对比表
+            - 资金量分析：入/出校验 + 最小值法 + max(峰值,最小资金量)
+            - 余额校验精确到分
+            - 适配建设银行、黑龙江省农村信用社模板
+            - 多 Sheet 自动识别，借贷标志自动解析
+
             详见 [CHANGELOG.md](./blob/main/CHANGELOG.md)
 
             ### 下载
-            - **Windows**: `银行流水资金统计-windows-x64.zip`
-            - **macOS**: `银行流水资金统计-macos.dmg`
+            - **Windows**: `BankFlowAnalyzer-windows-x64.zip`
+            - **macOS**: `BankFlowAnalyzer-macos.dmg`
           files: |
-            银行流水资金统计-windows-x64.zip
-            银行流水资金统计-macos.dmg
+            BankFlowAnalyzer-windows-x64.zip
+            BankFlowAnalyzer-macos.dmg
           draft: false
           prerelease: false

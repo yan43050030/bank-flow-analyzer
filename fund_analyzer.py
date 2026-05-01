@@ -7,11 +7,9 @@
 
 import sys
 import os
-
-# 确保项目根目录在 sys.path 中
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication
 from ui.main_window import MainWindow
 from version import APP_NAME
 

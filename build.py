@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
-"""跨平台打包脚本"""
+"""跨平台打包脚本 — PySide6"""
 
-import os
-import sys
-import subprocess
-import platform
+import os, sys, shutil, subprocess, platform
 from version import __version__
 
+APP_NAME = "BankFlowAnalyzer"
 APP_NAME_CN = "银行流水资金统计"
 MAIN_SCRIPT = "fund_analyzer.py"
-THEMES_DIR = "ui/themes"
 
 
 def build():
@@ -17,25 +14,23 @@ def build():
     system = platform.system()
     print(f"平台: {system}")
 
-    # 清理
     for d in ["build", "dist"]:
         if os.path.exists(d):
-            import shutil
             shutil.rmtree(d)
             print(f"已清理 {d}/")
 
-    # PyInstaller 参数
-    add_data = f"--add-data {THEMES_DIR}:{THEMES_DIR}"
-    if system == "Windows":
-        add_data = f"--add-data {THEMES_DIR};{THEMES_DIR}"
+    sep = ";" if system == "Windows" else ":"
+    add_data = f"ui/themes{sep}ui/themes"
 
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean",
         "--windowed",
-        "--name", APP_NAME_CN,
-        add_data,
+        "--name", APP_NAME,
+        "--add-data", add_data,
         "--hidden-import", "matplotlib.backends.backend_qtagg",
+        "--exclude-module", "PyQt6",
+        "--exclude-module", "PyQt5",
         MAIN_SCRIPT,
     ]
 
@@ -45,7 +40,9 @@ def build():
         print("打包失败!", file=sys.stderr)
         sys.exit(1)
 
-    print(f"\n✅ 打包完成! 输出在 dist/{APP_NAME_CN}/")
+    dist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist", APP_NAME)
+    print(f"\nBuild complete! Output: {dist_dir}/")
+    print(f"  Executable: {dist_dir}/{APP_NAME}.exe")
 
 
 if __name__ == "__main__":

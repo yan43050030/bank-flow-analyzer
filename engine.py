@@ -90,6 +90,17 @@ class CardReport:
     # 原始分类交易
     all_transactions: List[Transaction] = field(default_factory=list)
 
+    # ── 资金量分析（最小值法）──
+    total_income: float = 0.0          # 入账合计
+    total_expense: float = 0.0         # 出账合计
+    fund_size: float = 0.0             # 最小资金量
+    income_detail: Dict[str, float] = field(default_factory=dict)
+    expense_detail: Dict[str, float] = field(default_factory=dict)
+    fund_detail: Dict[str, float] = field(default_factory=dict)
+    balance_verified: bool = False
+    balance_diff: float = 0.0
+    transfer_recycled: float = 0.0     # 同账户转入转出中被抵销(取小)的部分
+
     # 步骤日志
     steps: List[str] = field(default_factory=list)
 
@@ -125,7 +136,7 @@ class TransactionClassifier:
     """根据交易类型/对手方/备注，自动分类交易"""
 
     # 现金存取关键词
-    CASH_OUT_KEYWORDS = ["取款", "取现", "ATM取", "提款", "ATM取款"]
+    CASH_OUT_KEYWORDS = ["取款", "取现", "ATM取", "提款", "ATM取款", "支取"]
     CASH_IN_KEYWORDS = ["存款", "存现", "现金存入", "ATM存款", "ATM存"]
 
     # 理财关键词
@@ -134,7 +145,9 @@ class TransactionClassifier:
 
     # 消费关键词
     CONSUME_KEYWORDS = ["消费", "支付", "购物", "刷卡", "POS", "银联消费",
-                        "快捷支付", "网上支付", "扫码支付", "预授权"]
+                        "快捷支付", "网上支付", "扫码支付", "预授权",
+                        "短信费", "扣款", "手续费", "服务费", "年费",
+                        "充值", "管理费", "收费", "通讯费"]
 
     # 消费对手方关键词
     CONSUME_CP_KEYWORDS = ["支付宝", "微信", "京东", "淘宝", "美团", "饿了么",
@@ -148,7 +161,8 @@ class TransactionClassifier:
 
     # 收入关键词（工资等）
     INCOME_KEYWORDS = ["工资", "薪金", "奖金", "劳务", "报销", "退款", "退税",
-                       "利息", "分红", "股息", "租金", "补贴"]
+                       "利息", "分红", "股息", "租金", "补贴",
+                       "利息存入", "入账", "退货", "提现"]
 
     @classmethod
     def classify(cls, tx: Transaction) -> str:
@@ -171,20 +185,20 @@ class TransactionClassifier:
             # 正金额=赎回/卖出, 负金额=买入
             return "finance_sell" if amount > 0 else "finance_buy"
 
-        # 3. 消费
+        # 3. 收入/退款（必须在消费之前，避免 "消费退货" 被 "消费" 捕获）
+        if any(kw in raw for kw in cls.INCOME_KEYWORDS):
+            return "transfer_in"
+
+        # 4. 消费
         if any(kw in raw for kw in cls.CONSUME_KEYWORDS):
             return "consume"
         if any(kw in combined for kw in cls.CONSUME_CP_KEYWORDS):
             return "consume"
 
-        # 4. 转账
+        # 5. 转账
         is_transfer = any(kw in raw for kw in cls.TRANSFER_KEYWORDS)
         if is_transfer:
             return "transfer_out" if amount < 0 else "transfer_in"
-
-        # 5. 收入
-        if any(kw in raw for kw in cls.INCOME_KEYWORDS):
-            return "transfer_in"
 
         # 6. 按金额方向兜底判断
         if amount < 0:
@@ -474,14 +488,15 @@ class CardAnalyzer:
         report.log(f"  转入: {len(t_in)} 笔 ({report.transfer_in:,.2f})")
 
         # === Step 5: 计算余额 & 历史峰值 ===
-        # 余额 = 净存入(未配对) + 净转入 + 已赎回理财净额 - 消费 - 未赎回理财支出
-        #       = cash_deposit_net + transfer_in - transfer_out + (理财赎回总额 - 理财买入已配对总额) - consume - finance_unredeemed
+        # 余额 = 存现净额 + 净转入 + 理财净赎回 - 消费
+        # 直接用分类合计计算，避免 cash_deposit_net 部分匹配时的误差
 
+        cash_in_total = sum(abs(t.amount) for t in transactions if t.category == "cash_in")
+        cash_out_total = sum(abs(t.amount) for t in transactions if t.category == "cash_out")
         finance_sell_total = sum(abs(t.amount) for t in transactions if t.category == "finance_sell")
         finance_buy_total = sum(abs(t.amount) for t in transactions if t.category == "finance_buy")
 
-        # 余额估算
-        report.balance = (report.cash_deposit_net
+        report.balance = (cash_in_total - cash_out_total
                          + report.transfer_in
                          - report.transfer_out
                          + finance_sell_total
@@ -500,7 +515,131 @@ class CardAnalyzer:
         report.log(f"  存取经过: {report.cash_paired:,.2f}")
         report.log(f"  理财获利: {report.finance_profit:,.2f}")
 
+        # === Step 6: 资金量分析（最小值法）===
+        self._analyze_funds(report, transactions)
+
         return report
+
+    def _analyze_funds(self, report: CardReport, transactions: List[Transaction]):
+        """资金量分析：入/出校验 + 最小资金量估算"""
+        # ── 入账 / 出账合计 ──
+        cash_in_total = sum(abs(t.amount) for t in transactions if t.category == "cash_in")
+        cash_out_total = sum(abs(t.amount) for t in transactions if t.category == "cash_out")
+        transfer_in_total = sum(abs(t.amount) for t in transactions if t.category == "transfer_in")
+        transfer_out_total = sum(abs(t.amount) for t in transactions if t.category == "transfer_out")
+        finance_buy_total = sum(abs(t.amount) for t in transactions if t.category == "finance_buy")
+        finance_sell_total = sum(abs(t.amount) for t in transactions if t.category == "finance_sell")
+        consume_total = sum(abs(t.amount) for t in transactions if t.category == "consume")
+
+        report.total_income = cash_in_total + transfer_in_total + finance_sell_total
+        report.total_expense = cash_out_total + transfer_out_total + finance_buy_total + consume_total
+
+        report.income_detail = {
+            "存现(cash_in)": cash_in_total,
+            "转入(transfer_in)": transfer_in_total,
+            "理财返还(finance_sell)": finance_sell_total,
+        }
+        report.expense_detail = {
+            "取现(cash_out)": cash_out_total,
+            "转出(transfer_out)": transfer_out_total,
+            "理财上划(finance_buy)": finance_buy_total,
+            "消费(consume)": consume_total,
+        }
+
+        # ── 余额校验: 入 - 出 应等于 余额 + 未到期理财 ──
+        expected_balance = report.total_income - report.total_expense
+        actual_balance_plus_finance = report.balance + report.finance_unredeemed
+        report.balance_diff = expected_balance - actual_balance_plus_finance
+        report.balance_verified = abs(report.balance_diff) < 0.02
+
+        # ── 最小资金量（最小值法）──
+        # 原则：
+        #   1. 消费全部计入（不重复）
+        #   2. 转出一般计入，但相同对手账户同时有转入→取 max(in,out) 避免重复计算
+        #   3. 存现/取现 取 min → 可能循环
+        #   4. 理财买入/赎回 取 min → 可能循环
+
+        # 转出：按对手账户检测循环
+        transfer_txs = [t for t in transactions if t.category in ("transfer_in", "transfer_out")]
+        cp_in = defaultdict(float)
+        cp_out = defaultdict(float)
+        for t in transfer_txs:
+            cp = (t.counterparty or "").strip()
+            if not cp:
+                cp = "__无对手__"
+            if t.category == "transfer_in":
+                cp_in[cp] += abs(t.amount)
+            else:
+                cp_out[cp] += abs(t.amount)
+
+        transfer_fund = 0.0
+        recycled_pairs = []
+        all_cps = set(list(cp_in.keys()) + list(cp_out.keys()))
+        for cp in all_cps:
+            i = cp_in.get(cp, 0)
+            o = cp_out.get(cp, 0)
+            if i > 0 and o > 0:
+                # 同一对手有进有出 → 可能循环，取 max
+                transfer_fund += max(i, o)
+                recycled = min(i, o)
+                if recycled > 0:
+                    recycled_pairs.append((cp, i, o, max(i, o), recycled))
+            elif o > 0:
+                # 纯转出 → 全部计入
+                transfer_fund += o
+            elif i > 0:
+                # 纯转入（如工资）→ 不计入资金量（这是资金来源，非使用）
+                pass
+
+        report.transfer_recycled = sum(p[4] for p in recycled_pairs)
+
+        cash_fund = min(cash_in_total, cash_out_total)
+        finance_fund = min(finance_buy_total, finance_sell_total)
+
+        # 最小资金量（最小值法）：避免存取/理财循环重复计数
+        min_fund_size = consume_total + transfer_fund + cash_fund + finance_fund
+
+        # 最终资金量 = max(历史最高峰值, 最小资金量)
+        # 理由：历史峰值是真实存在的资金（如大额存入又取出），不能因取小而被忽略
+        report.fund_size = max(report.peak_funds, min_fund_size)
+
+        report.fund_detail = {
+            "消费(consume)": consume_total,
+            "转出去重(transfer_dedup)": transfer_fund,
+            "存取取小(min_cash)": cash_fund,
+            "理财取小(min_finance)": finance_fund,
+            "=最小资金量(min_fund)": min_fund_size,
+            "历史最高峰值(peak)": report.peak_funds,
+            "=最终资金量(max)": report.fund_size,
+        }
+        report.fund_detail["#同户转入出_取大组数"] = len(recycled_pairs)
+        report.fund_detail["#同户转入出_抵销额"] = report.transfer_recycled
+
+        # 资金量结论
+        if report.peak_funds > min_fund_size:
+            peak_reason = f"历史峰值 {report.peak_funds:,.0f} > 最小资金量 {min_fund_size:,.0f}，说明该卡曾真实持有大额资金"
+        elif abs(report.peak_funds - min_fund_size) < 1:
+            peak_reason = f"历史峰值与最小资金量基本一致 ({report.peak_funds:,.0f})"
+        else:
+            peak_reason = f"最小资金量 {min_fund_size:,.0f} >= 历史峰值 {report.peak_funds:,.0f}，资金以消费/转出为主"
+
+        report.log(f"\n--- 资金量分析 ---")
+        report.log(f"  入账合计: {report.total_income:,.2f}")
+        report.log(f"  出账合计: {report.total_expense:,.2f}")
+        report.log(f"  入-出 = {expected_balance:,.2f}")
+        report.log(f"  余额+未到期理财 = {actual_balance_plus_finance:,.2f}")
+        report.log(f"  余额校验{'✓' if report.balance_verified else '✗ 差异=' + str(round(report.balance_diff, 2))}")
+        report.log(f"")
+        report.log(f"  历史最高峰值(A): {report.peak_funds:,.2f}  (时间序列累计最大值，真实存在)")
+        report.log(f"  最小资金量(B): {min_fund_size:,.2f}")
+        report.log(f"    = 消费{consume_total:,.0f} + 转出贡献{transfer_fund:,.0f}"
+                   f" + min存取{cash_fund:,.0f} + min理财{finance_fund:,.0f}")
+        report.log(f"  最终资金量 max(A,B): {report.fund_size:,.2f}")
+        report.log(f"  结论: {peak_reason}")
+        if recycled_pairs:
+            report.log(f"  同户转入出({len(recycled_pairs)}组，抵销{report.transfer_recycled:,.0f}):")
+            for cp, i, o, mx, rc in recycled_pairs[:10]:
+                report.log(f"    {cp[:30]}: 入{i:,.0f} 出{o:,.0f} → 取大{mx:,.0f}")
 
     def _calc_peak(self, transactions: List[Transaction]) -> float:
         """计算历史最高资金（序列累计峰值）"""
