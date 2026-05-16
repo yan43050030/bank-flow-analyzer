@@ -1,3 +1,3 @@
-__version__ = "3.0.1"
-__version_tuple__ = (3, 0, 1)
+__version__ = "3.0.2"
+__version_tuple__ = (3, 0, 2)
 APP_NAME = "银行流水资金统计工具"

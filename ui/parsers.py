@@ -47,6 +47,11 @@ def parse_amount(val) -> float:
     if pd.isna(val):
         return 0.0
     s = str(val).strip().replace(",", "").replace("¥", "").replace("￥", "").replace(" ", "")
+    # 银行常见负数格式: (1000.00) 或 1000.00-
+    if s.startswith("(") and s.endswith(")"):
+        s = "-" + s[1:-1]
+    elif s.endswith("-"):
+        s = "-" + s[:-1]
     try:
         return float(s)
     except ValueError:

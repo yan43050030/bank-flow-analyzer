@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.0.2] - 2026-05-16
+
+### 修复
+- **P4 部分匹配存款剩余金额未扣除**：`CashChainMatcher.match()` 中存款被部分匹配后（如存20万取10万），`unmatched_dp` 仍返回原始金额20万而非剩余10万，导致 `cash_deposit_net` 和 `balance` 虚高
+- **P5 `is_partial` 语义错误**：`is_partial = wd_amt > dp_remaining` 只在"取款>存款"时标记，改为 `wd_amt != dp_remaining`，存款与取款金额不等即为部分匹配
+
+### 新增
+- `parse_amount()` 支持银行常见负数格式：`(1,000.00)` → `-1000.0`，`1000.00-` → `-1000.0`
+
 ## [3.0.1] - 2026-05-01
 
 ### 修复（v2.4-3.0 审查发现的 7 个缺陷）

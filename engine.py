@@ -595,21 +595,36 @@ class CashChainMatcher:
                     best_j = j
 
             if best_j >= 0:
-                matched = min(wd_amt, dp_remaining[best_j])
+                orig_dp = dp_remaining[best_j]
+                matched = min(wd_amt, orig_dp)
                 pairs.append(CashPair(
                     withdraw_tx=wd,
                     deposit_tx=deposits[best_j],
                     matched_amount=matched,
-                    is_partial=wd_amt > dp_remaining[best_j]
+                    is_partial=wd_amt != orig_dp
                 ))
                 dp_remaining[best_j] -= matched
                 wd_used[i] = True
                 if dp_remaining[best_j] <= 0.01:
                     dp_used[best_j] = True
 
-        # 未配对的
+        # 未配对的（部分匹配的存款需使用剩余金额）
         unmatched_wd = [wd for i, wd in enumerate(withdraws) if not wd_used[i]]
-        unmatched_dp = [dp for j, dp in enumerate(deposits) if not dp_used[j]]
+        unmatched_dp = []
+        for j, dp in enumerate(deposits):
+            if not dp_used[j]:
+                remaining = dp_remaining[j]
+                orig = abs(dp.amount)
+                if remaining < orig - 0.01:
+                    tx = Transaction(
+                        date=dp.date, card=dp.card, name=dp.name,
+                        raw_type=dp.raw_type, amount=remaining if dp.amount > 0 else -remaining,
+                        counterparty=dp.counterparty, remark=dp.remark,
+                        row_index=dp.row_index, category=dp.category,
+                    )
+                    unmatched_dp.append(tx)
+                else:
+                    unmatched_dp.append(dp)
 
         # 存取经过金额 = 配对成功的金额
         cash_flow_amount = sum(p.matched_amount for p in pairs)
