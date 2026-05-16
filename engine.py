@@ -28,6 +28,12 @@ class Transaction:
     remark: str = ""
     row_index: int = 0       # 原始行号
 
+    # 跨软件联动字段 (v4.0 case-interop-v1)，详见 docs/INTEROP_SPEC.md
+    counterparty_account: str = ""   # 对手账号
+    counterparty_phone: str = ""     # 对手手机号 — 关联话单的主键
+    counterparty_id_card: str = ""   # 对手身份证 — 二级关联键
+    channel: str = ""                # 交易渠道（手机银行/柜面/ATM 等）
+
     # 分类后会赋值
     category: str = ""       # cash_in, cash_out, finance_buy, finance_sell, consume, transfer_in, transfer_out, other
 
@@ -620,7 +626,11 @@ class CashChainMatcher:
                         date=dp.date, card=dp.card, name=dp.name,
                         raw_type=dp.raw_type, amount=remaining if dp.amount > 0 else -remaining,
                         counterparty=dp.counterparty, remark=dp.remark,
-                        row_index=dp.row_index, category=dp.category,
+                        row_index=dp.row_index,
+                        counterparty_account=dp.counterparty_account,
+                        counterparty_phone=dp.counterparty_phone,
+                        counterparty_id_card=dp.counterparty_id_card,
+                        channel=dp.channel, category=dp.category,
                     )
                     unmatched_dp.append(tx)
                 else:

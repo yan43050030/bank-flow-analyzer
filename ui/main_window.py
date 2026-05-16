@@ -18,12 +18,18 @@ from engine import (
     Transaction, analyze_bank_flow, AnalysisResult, SuspicionConfig,
     generate_report,
 )
+from interop import (
+    InteropError, load_interop_package, save_interop_package,
+    build_export_package, reports_to_transaction_events,
+    analyze_transfer_call_correlation,
+)
 from ui.theme_manager import ThemeManager
 from ui.parsers import parse_amount, parse_date, resolve_direction
 from ui.widgets.left_panel import LeftPanel
 from ui.widgets.fund_header import FundHeader
 from ui.widgets.summary_tab import SummaryTab
 from ui.widgets.card_tab import CardTab
+from ui.widgets.interop_tab import InteropTab
 
 
 class MainWindow(QMainWindow):
@@ -35,6 +41,11 @@ class MainWindow(QMainWindow):
         self._result: Optional[AnalysisResult] = None
         self._current_file: str = ""
         self._card_tabs: list[CardTab] = []
+        # 跨软件联动 (G 组)
+        self._interop_pkg = None          # 从话单工具导入的交换包
+        self._correlations: list = []     # 转账-通话交叉分析结果
+        self._last_large_threshold: float = 50000.0
+        self._has_interop_tab: bool = False
         self.tm = ThemeManager()
 
         self.setWindowTitle(f"{APP_NAME} v{__version__}")
@@ -57,6 +68,8 @@ class MainWindow(QMainWindow):
         self._left.run_requested.connect(self._on_run_requested)
         self._left.export_btn.clicked.connect(self._export_result)
         self._left.report_requested.connect(self._export_report)
+        self._left.interop_import_requested.connect(self._on_interop_import)
+        self._left.interop_export_requested.connect(self._on_interop_export)
         root.addWidget(self._left)
 
         # 右侧 — 包裹在 ScrollArea 中支持横向滚动
@@ -156,17 +169,23 @@ class MainWindow(QMainWindow):
             amt = abs(amt) if direction == 1 else (-abs(amt) if direction == -1 else amt)
             if params.get("skip_small") and abs(amt) < 100:
                 continue
+            def col(key):
+                """读取可选映射列的值，未映射返回空串"""
+                c = mappings.get(key, "")
+                return str(row.get(c, "")).strip() if c else ""
+
             tx = Transaction(
                 date=d,
                 card=str(row.get(mappings["card"], "")).strip(),
                 name=str(row.get(mappings.get("name", ""), "")).strip(),
                 raw_type=str(row.get(mappings["type"], "")).strip(),
                 amount=amt,
-                counterparty=str(row.get(mappings.get("cp", ""), "")).strip()
-                             if mappings.get("cp") else "",
-                remark=str(row.get(mappings.get("remark", ""), "")).strip()
-                        if mappings.get("remark") else "",
+                counterparty=col("cp"),
+                remark=col("remark"),
                 row_index=idx,
+                counterparty_account=col("cp_account"),
+                counterparty_phone=col("cp_phone"),
+                counterparty_id_card=col("cp_id"),
             )
             transactions.append(tx)
 
@@ -175,8 +194,9 @@ class MainWindow(QMainWindow):
             return
 
         # 构建可调阈值配置
+        self._last_large_threshold = float(config.get("large_threshold", 50000))
         sconfig = SuspicionConfig(
-            large_threshold=float(config.get("large_threshold", 50000)),
+            large_threshold=self._last_large_threshold,
             night_start=int(config.get("night_start", 22)),
             night_end=int(config.get("night_end", 6)),
             blacklist_keywords=config.get("blacklist_keywords", []),
@@ -190,6 +210,9 @@ class MainWindow(QMainWindow):
             finance_max_days=params.get("finance_max_days", 365 * 3),
             suspicion_config=sconfig,
         )
+
+        # 通联交叉分析（若已导入话单联动包）
+        self._run_correlation()
 
         # 渲染
         self._render_results()
@@ -215,6 +238,14 @@ class MainWindow(QMainWindow):
         self._summary_tab = SummaryTab()
         self._summary_tab.load(self._result)  # 内部会调 unique_reports
         self._tabs.addTab(self._summary_tab, "📊 汇总")
+
+        # ── 通联交叉 Tab（仅在导入了话单联动包时显示）──
+        self._has_interop_tab = bool(
+            self._interop_pkg is not None and self._interop_pkg.call_events)
+        if self._has_interop_tab:
+            interop_tab = InteropTab()
+            interop_tab.load(self._correlations)
+            self._tabs.addTab(interop_tab, "🔗 通联交叉")
 
         # ── 各卡 Tab ──
         for i, r in enumerate(reports):
@@ -255,8 +286,19 @@ class MainWindow(QMainWindow):
                 ("📋 卡数", f"{info['card_count']} 张"),
                 ("⚖ 入-出", f"{info['total_income'] - info['total_expense']:,.0f}"),
             ])
+        elif self._has_interop_tab and index == 1:
+            # 通联交叉 Tab
+            n = len(self._correlations)
+            self._fund_header.set_fund_text(
+                f"🔗 通联交叉分析 — {n} 笔大额转账在转账前有通话往来")
+            self._fund_header.set_cards([
+                ("🔗 关联转账数", f"{n}"),
+                ("📞 已导入通话", f"{len(self._interop_pkg.call_events)}"),
+            ])
         else:
-            r = self._result.reports[index - 1]
+            # 卡片 Tab：汇总占 1 个，通联交叉（若有）再占 1 个
+            offset = 2 if self._has_interop_tab else 1
+            r = self._result.reports[index - offset]
             peak = r.peak_funds
             tp = r.fund_detail.get("=资金通量(throughput)", 0)
             reason = f"取历史峰值 (峰值{peak:,.0f} > 通量{tp:,.0f})" if peak > tp \
@@ -336,3 +378,62 @@ class MainWindow(QMainWindow):
             self._status.showMessage(f"导出成功: {path}")
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
+
+    # ═══ 跨软件联动 (G 组) ══════════════════════════════
+
+    def _run_correlation(self):
+        """对当前分析结果做转账-通话交叉分析（需已导入话单联动包）"""
+        self._correlations = []
+        if (self._interop_pkg is None
+                or not self._interop_pkg.call_events
+                or self._result is None):
+            return
+        tx_events = reports_to_transaction_events(self._result.unique_reports)
+        self._correlations = analyze_transfer_call_correlation(
+            tx_events, self._interop_pkg.call_events,
+            window_hours=24.0,
+            large_threshold=self._last_large_threshold)
+
+    def _on_interop_import(self, path: str):
+        """导入话单工具导出的 case-interop-v1 联动包"""
+        try:
+            pkg = load_interop_package(path)
+        except InteropError as e:
+            QMessageBox.critical(self, "联动包导入失败", str(e))
+            return
+        self._interop_pkg = pkg
+        self._status.showMessage(
+            f"已导入联动包: {os.path.basename(path)} | "
+            f"实体{len(pkg.entities)} 通话{len(pkg.call_events)} "
+            f"短信{len(pkg.sms_events)}")
+        QMessageBox.information(
+            self, "联动包已导入",
+            f"案件: {pkg.case_name or '(未命名)'}\n"
+            f"来源: {pkg.exported_by or '(未知)'}\n"
+            f"通话事件: {len(pkg.call_events)} 条\n\n"
+            f"完成流水分析后将自动生成「通联交叉」分析。")
+        # 若已有分析结果，立即重算并刷新
+        if self._result is not None:
+            self._run_correlation()
+            self._render_results()
+
+    def _on_interop_export(self):
+        """导出 case-interop-v1 联动包（含银行侧 transaction_events）"""
+        if self._result is None or not self._result.reports:
+            QMessageBox.information(self, "提示", "请先完成流水分析再导出联动包")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出案件联动包", "案件交换包.json", "案件交换包 (*.json)")
+        if not path:
+            return
+        try:
+            case_name = self._interop_pkg.case_name if self._interop_pkg else ""
+            pkg = build_export_package(
+                self._result.unique_reports,
+                case_name=case_name,
+                base_package=self._interop_pkg)
+            save_interop_package(pkg, path)
+            self._status.showMessage(
+                f"联动包已导出: {path} | 交易{len(pkg.transaction_events)}条")
+        except Exception as e:
+            QMessageBox.critical(self, "联动包导出失败", str(e))

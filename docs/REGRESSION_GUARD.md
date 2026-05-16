@@ -16,6 +16,7 @@
 | `_analyze_funds` / `_calc_throughput` | v2.2 跨载体循环重复计算（已通过 FIFO 池修复） |
 | `CounterpartyAnalyzer.analyze` | P2（HHI 顶格）、P3（品牌名漏识） |
 | `ConsumptionClassifier.classify_consumption` | Bug 7（酒店品牌被误归高端购物） |
+| `interop.py` 任何函数 / `SCHEMA_ID` | 跨仓库契约——见 `docs/INTEROP_SPEC.md`，不能单方面改 |
 | `test_engine.py` 中任何 assert | "测试断言不能放宽"——v2.5 教训（详见 Bug 3） |
 
 ---

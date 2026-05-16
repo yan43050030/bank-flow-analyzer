@@ -25,6 +25,9 @@ class LeftPanel(QWidget):
     run_requested = Signal(dict, dict, dict)
     # 报告导出信号
     report_requested = Signal()
+    # 跨软件联动 (G 组): 导入联动包 (路径) / 导出联动包
+    interop_import_requested = Signal(str)
+    interop_export_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -54,6 +57,14 @@ class LeftPanel(QWidget):
         self.btn_report.setEnabled(False)
         self.btn_report.clicked.connect(self._on_export_report)
         f.addWidget(self.btn_report)
+        # 跨软件联动 (G 组)
+        self.btn_interop_import = QPushButton("📥 导入话单联动包 (json)")
+        self.btn_interop_import.clicked.connect(self._on_interop_import)
+        f.addWidget(self.btn_interop_import)
+        self.btn_interop_export = QPushButton("🔗 导出案件联动包 (json)")
+        self.btn_interop_export.setEnabled(False)
+        self.btn_interop_export.clicked.connect(self._on_interop_export)
+        f.addWidget(self.btn_interop_export)
         lv.addWidget(g1)
 
         # ── 字段映射 ──
@@ -62,10 +73,12 @@ class LeftPanel(QWidget):
         g.setSpacing(6)
         self._mapping_cmbs = {}
         field_specs = [
-            ("date",   "日期"),     ("name",   "姓名"),
-            ("card",   "卡号"),     ("type",   "交易摘要"),
-            ("amount", "金额"),     ("dc",     "借贷标志"),
-            ("cp",     "交易对手"), ("remark", "备注"),
+            ("date",   "日期"),       ("name",     "姓名"),
+            ("card",   "卡号"),       ("type",     "交易摘要"),
+            ("amount", "金额"),       ("dc",       "借贷标志"),
+            ("cp",     "交易对手"),   ("remark",   "备注"),
+            ("cp_phone",   "对手手机号"),  ("cp_id",  "对手身份证"),
+            ("cp_account", "对手账号"),
         ]
         for i, (key, label) in enumerate(field_specs):
             cmb = QComboBox()
@@ -173,12 +186,15 @@ class LeftPanel(QWidget):
         mappings_spec = {
             "date":   (["时间","日期","time","date"], None),
             "name":   (["姓名","户名","name","客户名称"], ["对方","对手","查询"]),
-            "card":   (["卡号","账号","card","account","账户","查询对象","查询卡号"], ["对方","对手"]),
+            "card":   (["卡号","账号","card","account","账户","查询对象","查询卡号"], ["对方","对手","手机","身份证"]),
             "type":   (["交易摘要","摘要","业务类型","type"], None),
             "amount": (["金额","amount","money","发生额","收支"], None),
             "dc":     (["借贷标志","借贷","收支方向","收付","进出标志"], None),
-            "cp":     (["对手","对方名称","对手名称","counter","交易对手"], None),
+            "cp":     (["对手","对方名称","对手名称","counter","交易对手"], ["账号","卡号","手机","电话","身份证"]),
             "remark": (["备注","remark","附言","用途","说明","注释"], None),
+            "cp_phone":   (["对方手机","对手手机","对方电话","对手电话","对方联系电话","手机号"], None),
+            "cp_id":      (["对方身份证","对手身份证","对方证件","对手证件","对方证件号码"], None),
+            "cp_account": (["对方账号","对手账号","对方卡号","对手卡号","对方账户"], None),
         }
         for key, (kws, excl) in mappings_spec.items():
             cmb = self._mapping_cmbs[key]
@@ -216,10 +232,22 @@ class LeftPanel(QWidget):
     def _on_export_report(self):
         self.report_requested.emit()
 
+    # ── 跨软件联动 (G 组) ─────────────────────────────
+    def _on_interop_import(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "导入话单联动包", "", "案件交换包 (*.json);;All (*)")
+        if not path:
+            return
+        self.interop_import_requested.emit(path)
+
+    def _on_interop_export(self):
+        self.interop_export_requested.emit()
+
     # ── 外部可设置 ────────────────────────────────────
     def set_export_enabled(self, enabled: bool):
         self.btn_export.setEnabled(enabled)
         self.btn_report.setEnabled(enabled)
+        self.btn_interop_export.setEnabled(enabled)
 
     @property
     def export_btn(self):
