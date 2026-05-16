@@ -1,5 +1,42 @@
 # Changelog
 
+## [4.0.0] - 2026-05-16
+
+### 重大新增 — 跨软件联动（ROADMAP G 组）
+
+与**话单分析软件 (Call-record-analyzer)** 的数据联动。通过 `case-interop-v1`
+JSON 交换包，把"资金关系网"和"通讯关系网"叠加分析。
+
+- **G1 联动数据接口** —— 新增 `interop.py` 模块
+  - `case-interop-v1` JSON 交换包：读取 / 写出 / schema 校验（不匹配明确报错）
+  - `load_interop_package()` / `save_interop_package()`
+  - `reports_to_transaction_events()`：流水分析结果 → `transaction_events` 数组
+  - `build_export_package()`：导出时保留话单工具填的 `call_events`/`sms_events`，只补银行侧数据
+  - 完整接口规范见 `docs/INTEROP_SPEC.md`
+- **G2 转账-通话时序交叉分析** —— `analyze_transfer_call_correlation()`
+  - 银行视角：识别「大额转账前 N 小时内的密集通话」
+  - 对应受贿/行贿"先沟通→后送钱"的铁证模式
+  - 关联键：交易 `counterparty_phone` ↔ 通话 `other`/`self`
+
+### 数据模型
+- `Transaction` 新增字段：`counterparty_account` / `counterparty_phone` /
+  `counterparty_id_card` / `channel`（联动接口所需）
+
+### UI 变化
+- 左侧面板新增字段映射：对手手机号 / 对手身份证 / 对手账号
+- 左侧面板新增按钮：「📥 导入话单联动包」「🔗 导出案件联动包」
+- 新增「🔗 通联交叉」Tab：大额转账前置通话关联表（≥3 通标红）
+
+### 测试
+- 新增 5 个测试场景（test_scenario_20~24）：交换包读写往返 / schema 校验 /
+  交易事件导出 / 转账-通话交叉 / 导出保留对方数组
+- 全部 24 个测试通过
+
+### 文档
+- `docs/INTEROP_SPEC.md`：case-interop-v1 完整接口规范（跨仓库契约）
+- `docs/DESIGN_DECISIONS.md`：新增「跨软件联动」章节
+- ROADMAP.md：G 组标记完成
+
 ## [3.0.2] - 2026-05-16
 
 ### 修复

@@ -149,7 +149,8 @@ git push
 | v2.1 | PySide6 重构 + 多卡分页 + 资金量分析 | ✅ 已发布 |
 | v2.2 | 资金量算法重构（FIFO 循环池）+ 多设备协作 + 数据隔离 | ✅ 已发布 |
 | v2.3 | 对手分析（Top N / 双向 / HHI）+ 现金画像 + 可疑度打分 | ✅ 已发布 |
-| v2.3.x | 任职期对比（A3）+ 消费分类细化（A4） | 📅 计划 |
+| v2.4-3.0 | 任职期对比 / 消费画像 / 可调阈值 / 代持识别 / 证据包 | ✅ 已发布 |
+| v4.0 | 跨软件联动（与话单分析软件 case-interop-v1 互通） | ✅ 已发布 |
 | v2.4 | 多银行流水合并 + 资金链追踪 + 关联交易识别 | 📅 计划 |
 | v3.0 | 代持卡识别（行程 × 网点比对）+ 证据包导出 | 🎯 长期 |
 
@@ -159,7 +160,8 @@ git push
 
 本仓库针对多 AI 助手协作做了防回退保护：
 
-- [CLAUDE.md](CLAUDE.md) — 给 Claude/GPT/Gemini 等所有 LLM 的工作须知（七条铁律）
+- [CLAUDE.md](CLAUDE.md) — 给 Claude/GPT/Gemini 等所有 LLM 的工作须知（八条铁律）
+- [docs/INTEROP_SPEC.md](docs/INTEROP_SPEC.md) — 与话单分析软件的 `case-interop-v1` 联动接口规范
 - [docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md) — 关键算法决策的"为什么"
 - [docs/REGRESSION_GUARD.md](docs/REGRESSION_GUARD.md) — 历史回归 bug 与测试覆盖映射
 

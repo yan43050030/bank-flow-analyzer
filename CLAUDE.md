@@ -24,8 +24,9 @@
 | `_analyze_tenure` | `docs/DESIGN_DECISIONS.md#任职期资金量` |
 | `ConsumptionClassifier` | `docs/DESIGN_DECISIONS.md#消费分类` |
 | `CounterpartyAnalyzer` | `docs/DESIGN_DECISIONS.md#hhi-排除工资` |
+| `interop.py`（任何函数 / `SCHEMA_ID`） | `docs/INTEROP_SPEC.md` + `docs/DESIGN_DECISIONS.md#跨软件联动` |
 
-## 七条铁律（违反等于回归）
+## 八条铁律（违反等于回归）
 
 1. **绝不**把 `AML_THRESHOLDS`（5万/20万）合并进 `large_threshold`——它们是两个不同概念。理由见 [DESIGN_DECISIONS.md AML 阈值不可调](docs/DESIGN_DECISIONS.md#aml-阈值不可调)。
 2. **绝不**用 `sum(t.amount)` 当资金量——那是净流向。资金量必须用 `_calc_throughput` 的 FIFO 循环池算法。理由见 [DESIGN_DECISIONS.md 资金量算法](docs/DESIGN_DECISIONS.md#资金量算法)。
@@ -34,6 +35,7 @@
 5. **绝不**在低质量数据（≥50% 交易 hour=0）上评深夜分——会让所有交易看起来都在深夜。
 6. **绝不**通过放宽测试断言来让测试通过——测试是规格，断言失败说明代码错了。
 7. **绝不**用 `git add .` 或 `git add -A`——可能误传案件数据。只 add 具体文件名。
+8. **绝不**改 `interop.py` 的 `SCHEMA_ID`（`case-interop-v1`）——这是与话单软件的跨仓库契约，单方面改动两个软件就对不上。理由见 [DESIGN_DECISIONS.md 跨软件联动](docs/DESIGN_DECISIONS.md#跨软件联动)。
 
 ## 工作流
 

@@ -2,11 +2,20 @@
 """测试核心引擎算法"""
 
 import sys
+import os
+import json
+import tempfile
 from datetime import datetime
 from engine import (
     Transaction, TransactionClassifier,
     CashChainMatcher, FinanceMatcher,
     CardAnalyzer, analyze_bank_flow
+)
+from interop import (
+    SCHEMA_ID, InteropPackage, InteropError,
+    load_interop_package, save_interop_package,
+    reports_to_transaction_events, build_export_package,
+    analyze_transfer_call_correlation,
 )
 
 
@@ -503,6 +512,183 @@ def test_scenario_19_hotel_classification():
     print("✅ 测试19通过")
 
 
+def test_scenario_20_interop_roundtrip():
+    """G1: case-interop-v1 交换包 写出→读回 数据保真"""
+    print("\n" + "=" * 60)
+    print("测试20: 交换包读写往返（G1）")
+    print("=" * 60)
+
+    pkg = InteropPackage(
+        case_name="测试案件",
+        entities=[{"id": "E1", "name": "张三", "phones": ["13800001111"],
+                   "accounts": ["6222"], "role": "目标人"}],
+        call_events=[{"time": "2024-01-01T10:00:00", "self": "13800001111",
+                      "other": "13900002222", "duration_sec": 60, "type": "呼出"}],
+        transaction_events=[{"time": "2024-01-01T12:00:00", "amount": 50000,
+                             "counterparty_phone": "13900002222"}],
+    )
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as f:
+        tmp = f.name
+    try:
+        save_interop_package(pkg, tmp)
+        # 校验文件确实写了 schema 标识
+        with open(tmp, encoding="utf-8") as fh:
+            raw = json.load(fh)
+        assert raw["schema"] == SCHEMA_ID, f"schema 标识错误: {raw.get('schema')}"
+        assert raw["exported_by"] == "银行流水分析系统"
+
+        loaded = load_interop_package(tmp)
+        print(f"案件名: {loaded.case_name}")
+        print(f"实体数: {len(loaded.entities)}  通话数: {len(loaded.call_events)}")
+        print(f"交易数: {len(loaded.transaction_events)}")
+        assert loaded.case_name == "测试案件"
+        assert len(loaded.entities) == 1
+        assert len(loaded.call_events) == 1
+        assert loaded.call_events[0]["other"] == "13900002222"
+    finally:
+        os.unlink(tmp)
+    print("✅ 测试20通过")
+
+
+def test_scenario_21_interop_schema_validation():
+    """G1: schema 不匹配必须明确报错，不能静默"""
+    print("\n" + "=" * 60)
+    print("测试21: 交换包 schema 校验（G1）")
+    print("=" * 60)
+
+    bad_cases = [
+        ('{"schema": "wrong-version", "entities": []}', "错误 schema"),
+        ('{"entities": []}', "缺失 schema"),
+        ('{not valid json', "非法 JSON"),
+    ]
+    for content, desc in bad_cases:
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w",
+                                         encoding="utf-8") as f:
+            f.write(content)
+            tmp = f.name
+        try:
+            raised = False
+            try:
+                load_interop_package(tmp)
+            except InteropError as e:
+                raised = True
+                print(f"  {desc}: 正确抛出 InteropError — {str(e)[:50]}")
+            assert raised, f"{desc} 应抛 InteropError 但没有"
+        finally:
+            os.unlink(tmp)
+    print("✅ 测试21通过")
+
+
+def test_scenario_22_reports_to_transaction_events():
+    """G1: CardReport → transaction_events 字段映射正确"""
+    print("\n" + "=" * 60)
+    print("测试22: 交易事件导出（G1）")
+    print("=" * 60)
+
+    txs = [
+        Transaction(date=datetime(2024, 1, 1, 10, 0), card="6222000011112222",
+                    name="张三", raw_type="转账", amount=-50000,
+                    counterparty="李四", counterparty_phone="13900002222",
+                    counterparty_account="6228111122223333", channel="手机银行"),
+        Transaction(date=datetime(2024, 1, 2, 14, 0), card="6222000011112222",
+                    name="张三", raw_type="工资", amount=8000,
+                    counterparty="某某公司", counterparty_phone=""),
+    ]
+    r = analyze_bank_flow(txs).reports[0]
+    events = reports_to_transaction_events([r])
+    print(f"导出交易数: {len(events)}")
+    out = events[0]
+    print(f"  转出: time={out['time']} amount={out['amount']} "
+          f"from={out['from_account']} to={out['to_account']} "
+          f"phone={out['counterparty_phone']}")
+    assert len(events) == 2
+    assert out["amount"] == -50000, f"金额带符号: {out['amount']}"
+    assert out["from_account"] == "6222000011112222", "转出 from 应为本卡"
+    assert out["to_account"] == "6228111122223333", "转出 to 应为对手账号"
+    assert out["counterparty_phone"] == "13900002222", "手机号桥梁键应保留"
+    assert out["channel"] == "手机银行"
+    # 流入方向
+    inc = events[1]
+    assert inc["amount"] == 8000
+    assert inc["to_account"] == "6222000011112222", "流入 to 应为本卡"
+    print("✅ 测试22通过")
+
+
+def test_scenario_23_transfer_call_correlation():
+    """G2: 大额转账前的密集通话交叉分析（受贿"先沟通后送钱"模式）"""
+    print("\n" + "=" * 60)
+    print("测试23: 转账-通话时序交叉分析（G2）")
+    print("=" * 60)
+
+    # 大额转账：2024-01-05 15:00 给 13900002222 转 50万
+    transaction_events = [
+        {"time": "2024-01-05T15:00:00", "amount": -500000,
+         "counterparty": "李四", "counterparty_phone": "13900002222"},
+        # 小额转账（低于阈值，不应触发）
+        {"time": "2024-01-06T10:00:00", "amount": -3000,
+         "counterparty": "王五", "counterparty_phone": "13911112222"},
+    ]
+    call_events = [
+        # 转账前 1 天内的 3 通电话 → 应被关联
+        {"time": "2024-01-05T09:00:00", "self": "13800001111",
+         "other": "13900002222", "duration_sec": 300, "type": "呼出"},
+        {"time": "2024-01-05T11:00:00", "self": "13800001111",
+         "other": "13900002222", "duration_sec": 120, "type": "呼入"},
+        {"time": "2024-01-04T20:00:00", "self": "13800001111",
+         "other": "13900002222", "duration_sec": 600, "type": "呼出"},
+        # 转账后的电话 → 不在窗口内
+        {"time": "2024-01-05T18:00:00", "self": "13800001111",
+         "other": "13900002222", "duration_sec": 60, "type": "呼出"},
+        # 与本案无关号码
+        {"time": "2024-01-05T10:00:00", "self": "13800001111",
+         "other": "13988889999", "duration_sec": 60, "type": "呼出"},
+    ]
+    results = analyze_transfer_call_correlation(
+        transaction_events, call_events,
+        window_hours=24, large_threshold=50000)
+
+    print(f"关联到 {len(results)} 笔大额转账有先行通话")
+    assert len(results) == 1, f"应只有 1 笔大额转账命中: {len(results)}"
+    hit = results[0]
+    print(f"  转账 {hit['transaction']['amount']} → 前 24h 内 "
+          f"{hit['call_count']} 通电话, 累计 {hit['total_duration_sec']} 秒")
+    assert hit["call_count"] == 3, f"应关联 3 通转账前的电话: {hit['call_count']}"
+    assert hit["total_duration_sec"] == 1020, \
+        f"累计时长应 300+120+600=1020: {hit['total_duration_sec']}"
+    print("✅ 测试23通过")
+
+
+def test_scenario_24_interop_preserves_call_events():
+    """G1: 银行侧导出时必须保留话单工具填的 call_events（只补自己那部分）"""
+    print("\n" + "=" * 60)
+    print("测试24: 导出保留对方数组（G1）")
+    print("=" * 60)
+
+    # 模拟从话单工具导入的包
+    base = InteropPackage(
+        case_name="某受贿案",
+        entities=[{"id": "E1", "name": "张三", "accounts": ["6222"]}],
+        call_events=[{"time": "2024-01-01T10:00:00", "self": "138",
+                      "other": "139", "duration_sec": 60}],
+        sms_events=[{"time": "2024-01-01T10:05:00", "self": "138",
+                     "other": "139", "direction": "发送"}],
+    )
+    txs = [make_tx("2024-01-01", "6222", "转账", -50000, cp="李四")]
+    r = analyze_bank_flow(txs).reports[0]
+
+    pkg = build_export_package([r], case_name="某受贿案", base_package=base)
+    print(f"call_events 保留: {len(pkg.call_events)} 条")
+    print(f"sms_events 保留: {len(pkg.sms_events)} 条")
+    print(f"transaction_events 补充: {len(pkg.transaction_events)} 条")
+    print(f"analysis_summary 键: {list(pkg.analysis_summary.keys())}")
+
+    assert len(pkg.call_events) == 1, "必须保留话单工具的 call_events"
+    assert len(pkg.sms_events) == 1, "必须保留话单工具的 sms_events"
+    assert len(pkg.transaction_events) == 1, "应补充银行交易"
+    assert "银行流水分析" in pkg.analysis_summary, "应写入银行侧摘要"
+    print("✅ 测试24通过")
+
+
 if __name__ == "__main__":
     test_scenario_1()
     test_scenario_2()
@@ -523,5 +709,10 @@ if __name__ == "__main__":
     test_scenario_17_aml_threshold_decoupled()
     test_scenario_18_tenure_uses_throughput()
     test_scenario_19_hotel_classification()
+    test_scenario_20_interop_roundtrip()
+    test_scenario_21_interop_schema_validation()
+    test_scenario_22_reports_to_transaction_events()
+    test_scenario_23_transfer_call_correlation()
+    test_scenario_24_interop_preserves_call_events()
     print("\n" + "=" * 60)
     print("🎉 所有测试完成")
