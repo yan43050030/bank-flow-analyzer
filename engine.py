@@ -34,6 +34,9 @@ class Transaction:
     counterparty_id_card: str = ""   # 对手身份证 — 二级关联键
     channel: str = ""                # 交易渠道（手机银行/柜面/ATM 等）
 
+    # 持卡人身份证 (v4.2 D1)：用于把同一人名下多张卡聚合成嫌疑人画像
+    holder_id_card: str = ""
+
     # 分类后会赋值
     category: str = ""       # cash_in, cash_out, finance_buy, finance_sell, consume, transfer_in, transfer_out, other
 
@@ -61,6 +64,9 @@ class CardReport:
     """单张卡的统计报告"""
     card: str
     name: str
+
+    # 持卡人身份证 (D1 嫌疑人聚合用)
+    holder_id_card: str = ""
 
     # 原始统计
     total_records: int = 0
@@ -163,12 +169,42 @@ class CardReport:
 
 
 @dataclass
+class SuspectReport:
+    """嫌疑人画像 (D1)：同一人名下多张卡的聚合
+
+    分组键优先级：持卡人身份证 > 姓名 > 卡号（都缺失时各卡独立）。
+    合并资金量时识别"卡间互转"（对手账号是本人另一张卡）并剔除，
+    避免本人在自己卡之间倒钱被重复计入。
+    """
+    name: str = ""
+    id_card: str = ""
+    cards: list = field(default_factory=list)          # 卡号列表
+    card_reports: list = field(default_factory=list)   # [CardReport]
+    total_records: int = 0
+    combined_fund_size: float = 0.0      # 合并资金量（剔除卡间互转后的 throughput）
+    inter_card_transfer: float = 0.0     # 识别出的卡间互转金额（流出方向计）
+    total_consume: float = 0.0
+    total_income: float = 0.0
+    total_expense: float = 0.0
+    max_suspicion: float = 0.0
+    max_suspicion_label: str = ""
+    max_nominee: float = 0.0
+    max_nominee_label: str = ""
+
+    @property
+    def card_count(self) -> int:
+        return len(self.cards)
+
+
+@dataclass
 class AnalysisResult:
     """完整分析结果"""
     reports: List[CardReport] = field(default_factory=list)
     summary_steps: List[str] = field(default_factory=list)
     # D3 跨卡同步分赃检测结果
     synchronized_inflows: list = field(default_factory=list)
+    # D1 嫌疑人画像聚合结果
+    suspects: List[SuspectReport] = field(default_factory=list)
 
     @property
     def total_peak(self) -> float:
@@ -806,6 +842,10 @@ class CardAnalyzer:
         report = CardReport(card=card, name=name)
         report.total_records = len(transactions)
         report.all_transactions = transactions
+        # 持卡人身份证（D1 聚合用）：取第一笔非空值
+        report.holder_id_card = next(
+            (t.holder_id_card.strip() for t in transactions
+             if t.holder_id_card.strip()), "")
 
         # === Step 0: 分类所有交易 ===
         report.log(f"共 {len(transactions)} 笔交易，开始分类...")
@@ -1606,7 +1646,75 @@ def analyze_bank_flow(transactions: List[Transaction],
     # D3 跨卡同步分赃检测（多张卡同期大额入账）
     result.synchronized_inflows = detect_synchronized_inflow(result.reports)
 
+    # D1 嫌疑人画像聚合（按身份证/姓名合并多卡），用去重后的报告
+    result.suspects = aggregate_suspects(result.unique_reports)
+
     return result
+
+
+def aggregate_suspects(reports: list) -> List[SuspectReport]:
+    """D1 嫌疑人画像聚合：按持卡人身份证（无则姓名）合并多张卡。
+
+    CRITICAL: 合并资金量必须剔除"卡间互转"（对手账号是本人另一张卡），
+    否则本人在自己名下多卡间倒钱会被重复计入。
+    详见 docs/DESIGN_DECISIONS.md#嫌疑人画像聚合
+    """
+    # 分组键：身份证 > 姓名 > 卡号
+    groups: Dict[str, list] = defaultdict(list)
+    for r in reports:
+        idc = (r.holder_id_card or "").strip()
+        name = (r.name or "").strip()
+        if idc:
+            key = f"id:{idc}"
+        elif name:
+            key = f"name:{name}"
+        else:
+            key = f"card:{r.card}"
+        groups[key].append(r)
+
+    analyzer = CardAnalyzer()
+    suspects: List[SuspectReport] = []
+    for group in groups.values():
+        card_set = set(r.card for r in group)
+
+        # 合并交易，剔除卡间互转
+        combined = []
+        inter_amt = 0.0
+        for r in group:
+            for t in r.all_transactions:
+                cpa = (t.counterparty_account or "").strip()
+                if cpa and cpa in card_set:
+                    if t.amount < 0:           # 流出方向才计入互转额（避免双向重复）
+                        inter_amt += abs(t.amount)
+                    continue                   # 卡间互转不计入合并资金量
+                combined.append(t)
+        throughput, _, _ = analyzer._calc_throughput(combined)
+
+        # 取多卡中最高的可疑度 / 代持分及其标签
+        top_susp = max(group, key=lambda r: r.suspicion_score)
+        top_nom = max(group, key=lambda r: r.nominee_score)
+
+        suspects.append(SuspectReport(
+            name=group[0].name,
+            id_card=group[0].holder_id_card,
+            cards=sorted(card_set),
+            card_reports=group,
+            total_records=sum(r.total_records for r in group),
+            combined_fund_size=round(throughput, 2),
+            inter_card_transfer=round(inter_amt, 2),
+            total_consume=round(sum(r.consume_total for r in group), 2),
+            total_income=round(sum(r.total_income for r in group), 2),
+            total_expense=round(sum(r.total_expense for r in group), 2),
+            max_suspicion=top_susp.suspicion_score,
+            max_suspicion_label=top_susp.suspicion_label,
+            max_nominee=top_nom.nominee_score,
+            max_nominee_label=top_nom.nominee_label,
+        ))
+
+    # 多卡的排前面，再按合并资金量降序
+    suspects.sort(key=lambda s: (s.card_count > 1, s.combined_fund_size),
+                  reverse=True)
+    return suspects
 
 
 def _fixed_holiday(d: datetime) -> str:

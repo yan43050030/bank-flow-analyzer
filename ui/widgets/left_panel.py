@@ -78,7 +78,7 @@ class LeftPanel(QWidget):
             ("amount", "金额"),       ("dc",       "借贷标志"),
             ("cp",     "交易对手"),   ("remark",   "备注"),
             ("cp_phone",   "对手手机号"),  ("cp_id",  "对手身份证"),
-            ("cp_account", "对手账号"),
+            ("cp_account", "对手账号"),    ("holder_id", "持卡人身份证"),
         ]
         for i, (key, label) in enumerate(field_specs):
             cmb = QComboBox()
@@ -201,6 +201,8 @@ class LeftPanel(QWidget):
             "cp_phone":   (["对方手机","对手手机","对方电话","对手电话","对方联系电话","手机号"], None),
             "cp_id":      (["对方身份证","对手身份证","对方证件","对手证件","对方证件号码"], None),
             "cp_account": (["对方账号","对手账号","对方卡号","对手卡号","对方账户"], None),
+            "holder_id":  (["持卡人身份证","客户身份证","本人身份证","证件号码","身份证号","身份证号码"],
+                           ["对方","对手"]),
         }
         for key, (kws, excl) in mappings_spec.items():
             cmb = self._mapping_cmbs[key]

@@ -30,6 +30,7 @@ from ui.widgets.fund_header import FundHeader
 from ui.widgets.summary_tab import SummaryTab
 from ui.widgets.card_tab import CardTab
 from ui.widgets.interop_tab import InteropTab
+from ui.widgets.suspect_tab import SuspectTab
 
 
 class MainWindow(QMainWindow):
@@ -46,6 +47,7 @@ class MainWindow(QMainWindow):
         self._correlations: list = []     # 转账-通话交叉分析结果
         self._last_large_threshold: float = 50000.0
         self._has_interop_tab: bool = False
+        self._tab_kinds: list = []        # 与 _tabs 一一对应的种类标签
         self.tm = ThemeManager()
 
         self.setWindowTitle(f"{APP_NAME} v{__version__}")
@@ -186,6 +188,7 @@ class MainWindow(QMainWindow):
                 counterparty_account=col("cp_account"),
                 counterparty_phone=col("cp_phone"),
                 counterparty_id_card=col("cp_id"),
+                holder_id_card=col("holder_id"),
             )
             transactions.append(tx)
 
@@ -256,11 +259,21 @@ class MainWindow(QMainWindow):
         self._tabs.blockSignals(True)
         self._tabs.clear()
         self._card_tabs.clear()
+        # _tab_kinds 与 _tabs 一一对应，避免靠下标算偏移（易错）
+        self._tab_kinds = []
 
         # ── 汇总 Tab (使用去重数据) ──
         self._summary_tab = SummaryTab()
         self._summary_tab.load(self._result)  # 内部会调 unique_reports
         self._tabs.addTab(self._summary_tab, "📊 汇总")
+        self._tab_kinds.append("summary")
+
+        # ── 嫌疑人 Tab（仅在存在多卡嫌疑人时显示）──
+        if any(s.card_count > 1 for s in self._result.suspects):
+            suspect_tab = SuspectTab()
+            suspect_tab.load(self._result.suspects)
+            self._tabs.addTab(suspect_tab, "👤 嫌疑人")
+            self._tab_kinds.append("suspect")
 
         # ── 通联交叉 Tab（仅在导入了话单联动包时显示）──
         self._has_interop_tab = bool(
@@ -269,6 +282,7 @@ class MainWindow(QMainWindow):
             interop_tab = InteropTab()
             interop_tab.load(self._correlations)
             self._tabs.addTab(interop_tab, "🔗 通联交叉")
+            self._tab_kinds.append("interop")
 
         # ── 各卡 Tab ──
         for i, r in enumerate(reports):
@@ -280,6 +294,7 @@ class MainWindow(QMainWindow):
                 label += " [重复]"
             self._tabs.addTab(ct, label)
             self._card_tabs.append(ct)
+            self._tab_kinds.append(("card", r))
 
         self._tabs.blockSignals(False)
         self._tabs.setCurrentIndex(0)
@@ -295,8 +310,11 @@ class MainWindow(QMainWindow):
     def _on_tab_changed(self, index: int):
         if self._result is None or not self._result.reports:
             return
+        if index < 0 or index >= len(self._tab_kinds):
+            return
+        kind = self._tab_kinds[index]
 
-        if index == 0:
+        if kind == "summary":
             info = self._summary_tab.fund_info()
             self._fund_header.set_fund_text(
                 f"💎 总资金量: {info['total_fund']:,.0f} 元  ({info['card_count']}张卡合计)")
@@ -309,8 +327,16 @@ class MainWindow(QMainWindow):
                 ("📋 卡数", f"{info['card_count']} 张"),
                 ("⚖ 入-出", f"{info['total_income'] - info['total_expense']:,.0f}"),
             ])
-        elif self._has_interop_tab and index == 1:
-            # 通联交叉 Tab
+        elif kind == "suspect":
+            suspects = self._result.suspects
+            multi = sum(1 for s in suspects if s.card_count > 1)
+            self._fund_header.set_fund_text(
+                f"👤 嫌疑人画像 — {len(suspects)} 人，{multi} 人持多卡")
+            self._fund_header.set_cards([
+                ("👤 嫌疑人数", f"{len(suspects)}"),
+                ("🪪 持多卡人数", f"{multi}"),
+            ])
+        elif kind == "interop":
             n = len(self._correlations)
             self._fund_header.set_fund_text(
                 f"🔗 通联交叉分析 — {n} 笔大额转账在转账前有通话往来")
@@ -319,9 +345,8 @@ class MainWindow(QMainWindow):
                 ("📞 已导入通话", f"{len(self._interop_pkg.call_events)}"),
             ])
         else:
-            # 卡片 Tab：汇总占 1 个，通联交叉（若有）再占 1 个
-            offset = 2 if self._has_interop_tab else 1
-            r = self._result.reports[index - offset]
+            # ("card", report)
+            r = kind[1]
             peak = r.peak_funds
             tp = r.fund_detail.get("=资金通量(throughput)", 0)
             reason = f"取历史峰值 (峰值{peak:,.0f} > 通量{tp:,.0f})" if peak > tp \
