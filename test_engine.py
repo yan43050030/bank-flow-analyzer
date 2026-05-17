@@ -689,6 +689,111 @@ def test_scenario_24_interop_preserves_call_events():
     print("✅ 测试24通过")
 
 
+def test_scenario_25_split_laundering():
+    """D3: 拆分洗钱 — 大额入账后 24h 内拆分多笔小额流出"""
+    print("\n" + "=" * 60)
+    print("测试25: 拆分洗钱检测（D3）")
+    print("=" * 60)
+
+    txs = [
+        make_tx("2024-03-01", "6222", "转账", 300000, cp="不明来源"),
+        make_tx("2024-03-01", "6222", "转账", -40000, cp="甲"),
+        make_tx("2024-03-01", "6222", "转账", -40000, cp="乙"),
+        make_tx("2024-03-01", "6222", "转账", -40000, cp="丙"),
+        make_tx("2024-03-01", "6222", "转账", -40000, cp="丁"),
+    ]
+    r = analyze_bank_flow(txs).reports[0]
+    types = [a["type"] for a in r.timeseries_anomalies]
+    print(f"检出异常: {types}")
+    for a in r.timeseries_anomalies:
+        print(f"  [{a['type']}] {a['desc']}")
+    assert "split_laundering" in types, f"应检出拆分洗钱: {types}"
+    print("✅ 测试25通过")
+
+
+def test_scenario_26_batch_round():
+    """D3: 批量整数 — 多笔相同整额流出"""
+    print("\n" + "=" * 60)
+    print("测试26: 批量整数检测（D3）")
+    print("=" * 60)
+
+    txs = [
+        make_tx("2024-01-05", "6222", "转账", -30000, cp="甲"),
+        make_tx("2024-02-05", "6222", "转账", -30000, cp="乙"),
+        make_tx("2024-03-05", "6222", "转账", -30000, cp="丙"),
+    ]
+    r = analyze_bank_flow(txs).reports[0]
+    types = [a["type"] for a in r.timeseries_anomalies]
+    print(f"检出异常: {types}")
+    assert "batch_round" in types, f"应检出批量整数: {types}"
+    print("✅ 测试26通过")
+
+
+def test_scenario_27_holiday_burst():
+    """D3: 节假日突击 — 国庆期间大额交易"""
+    print("\n" + "=" * 60)
+    print("测试27: 节假日突击检测（D3）")
+    print("=" * 60)
+
+    txs = [
+        make_tx("2024-10-02", "6222", "转账", -80000, cp="甲"),   # 国庆
+        make_tx("2024-10-04", "6222", "转账", 120000, cp="乙"),   # 国庆
+        make_tx("2024-07-15", "6222", "转账", -5000, cp="丙"),    # 平日小额
+    ]
+    r = analyze_bank_flow(txs).reports[0]
+    types = [a["type"] for a in r.timeseries_anomalies]
+    print(f"检出异常: {types}")
+    assert "holiday_burst" in types, f"应检出节假日突击: {types}"
+    print("✅ 测试27通过")
+
+
+def test_scenario_28_synchronized_inflow():
+    """D3: 同步分赃 — 多张卡同期收到大额入账"""
+    print("\n" + "=" * 60)
+    print("测试28: 跨卡同步分赃检测（D3）")
+    print("=" * 60)
+
+    txs = [
+        make_tx("2024-05-01", "卡A", "转账", 100000, cp="上游公司"),
+        make_tx("2024-05-02", "卡B", "转账", 80000, cp="上游公司"),
+        make_tx("2024-05-03", "卡C", "转账", 60000, cp="上游公司"),
+        # 一笔孤立的入账（不同期）
+        make_tx("2024-09-01", "卡A", "工资", 10000, cp="单位"),
+    ]
+    result = analyze_bank_flow(txs)
+    groups = result.synchronized_inflows
+    print(f"同步分赃组数: {len(groups)}")
+    for g in groups:
+        print(f"  {g['date_start']}~{g['date_end']}: {g['card_count']}张卡 "
+              f"合计{g['total']:,.0f}")
+    assert len(groups) >= 1, "应检出 1 组同步入账"
+    assert groups[0]["card_count"] == 3, f"应跨 3 张卡: {groups[0]['card_count']}"
+    print("✅ 测试28通过")
+
+
+def test_scenario_29_key_dates():
+    """D4: 关键时间点关联 — 招标日 ±15 天的交易"""
+    print("\n" + "=" * 60)
+    print("测试29: 关键时间点关联（D4）")
+    print("=" * 60)
+
+    txs = [
+        make_tx("2024-06-10", "6222", "转账", 200000, cp="行贿人"),  # 招标前
+        make_tx("2024-06-20", "6222", "转账", -50000, cp="甲"),      # 招标后
+        make_tx("2024-01-01", "6222", "工资", 8000, cp="单位"),      # 窗口外
+    ]
+    result = analyze_bank_flow(
+        txs, key_dates=[("招标日", datetime(2024, 6, 15))])
+    r = result.reports[0]
+    hit = r.key_date_hits.get("招标日")
+    print(f"招标日命中: {hit}")
+    assert hit is not None, "应有招标日命中记录"
+    assert hit["txn_count"] == 2, f"窗口内应 2 笔: {hit['txn_count']}"
+    assert hit["before_count"] == 1 and hit["after_count"] == 1
+    assert hit["large_count"] == 2, f"大额应 2 笔: {hit['large_count']}"
+    print("✅ 测试29通过")
+
+
 if __name__ == "__main__":
     test_scenario_1()
     test_scenario_2()
@@ -714,5 +819,10 @@ if __name__ == "__main__":
     test_scenario_22_reports_to_transaction_events()
     test_scenario_23_transfer_call_correlation()
     test_scenario_24_interop_preserves_call_events()
+    test_scenario_25_split_laundering()
+    test_scenario_26_batch_round()
+    test_scenario_27_holiday_burst()
+    test_scenario_28_synchronized_inflow()
+    test_scenario_29_key_dates()
     print("\n" + "=" * 60)
     print("🎉 所有测试完成")

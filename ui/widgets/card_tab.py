@@ -121,6 +121,24 @@ class CardTab(QWidget):
         nv.addWidget(self._nominee_table)
         self._sub_tabs.addTab(nominee_page, "🔍 代持分析")
 
+        # ── 子 Tab 6: 异常时序 (D3/D4) ──
+        anomaly_page = QWidget()
+        av = QVBoxLayout(anomaly_page)
+        av.setContentsMargins(0, 0, 0, 0)
+        self._anomaly_info = QLabel()
+        self._anomaly_info.setStyleSheet("font-size:12px; padding:4px;")
+        self._anomaly_info.setWordWrap(True)
+        av.addWidget(self._anomaly_info)
+        self._anomaly_table = QTableWidget()
+        self._anomaly_table.setAlternatingRowColors(True)
+        self._anomaly_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._anomaly_table.setColumnCount(4)
+        self._anomaly_table.setHorizontalHeaderLabels(
+            ["类型", "描述", "关注度", "涉及笔数"])
+        self._anomaly_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        av.addWidget(self._anomaly_table)
+        self._sub_tabs.addTab(anomaly_page, "⚠ 异常时序")
+
     def load(self, report: CardReport):
         """加载单卡报告"""
         self._steps.setText("\n".join(report.steps))
@@ -129,6 +147,7 @@ class CardTab(QWidget):
         self._build_consume_table(report)
         self._build_tenure_table(report)
         self._build_nominee_table(report)
+        self._build_anomaly_table(report)
 
     # ── 统计明细 ──────────────────────────────────────
 
@@ -309,3 +328,56 @@ class CardTab(QWidget):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self._nominee_table.setItem(i, j, item)
+
+    # ── 异常时序 (D3/D4) ──────────────────────────────
+
+    def _build_anomaly_table(self, r: CardReport):
+        anomalies = r.timeseries_anomalies
+        key_hits = r.key_date_hits
+        type_label = {
+            "split_laundering": "🔴 拆分洗钱",
+            "batch_round": "🟡 批量整数",
+            "holiday_burst": "🟡 节假日突击",
+        }
+
+        if not anomalies and not key_hits:
+            self._anomaly_info.setText(
+                "未检出异常时序模式。\n"
+                "D3 自动检测：拆分洗钱 / 批量整数 / 节假日突击；"
+                "D4 关键时间点需在左侧面板填写。")
+            self._anomaly_table.setRowCount(0)
+            return
+
+        parts = []
+        if anomalies:
+            parts.append(f"D3 检出 {len(anomalies)} 类异常时序模式")
+        if key_hits:
+            parts.append(f"D4 关键时间点 {len(key_hits)} 个")
+        self._anomaly_info.setText(" | ".join(parts))
+
+        rows = []
+        for a in anomalies:
+            rows.append((
+                type_label.get(a["type"], a["type"]),
+                a["desc"], f"+{a['score']:.0f}", str(len(a.get("txns", []))),
+                a["type"] == "split_laundering"))
+        for label, h in key_hits.items():
+            rows.append((
+                f"📅 关键点·{label}",
+                f"{h['date']} ±{h['window_days']}天: 前{h['before_count']}笔"
+                f"/后{h['after_count']}笔，大额{h['large_count']}笔",
+                "—", str(h["txn_count"]), False))
+
+        self._anomaly_table.setRowCount(len(rows))
+        for i, (typ, desc, score, cnt, is_red) in enumerate(rows):
+            for j, val in enumerate([typ, desc, score, cnt]):
+                item = QTableWidgetItem(val)
+                if j == 1:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignLeft
+                                          | Qt.AlignmentFlag.AlignVCenter)
+                else:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if is_red:
+                    from PySide6.QtGui import QColor
+                    item.setBackground(QColor("#FFE0E0"))
+                self._anomaly_table.setItem(i, j, item)

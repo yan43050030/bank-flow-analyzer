@@ -202,6 +202,9 @@ class MainWindow(QMainWindow):
             blacklist_keywords=config.get("blacklist_keywords", []),
         )
 
+        # D4 关键时间点：解析 "标签:日期, 标签:日期" 文本
+        key_dates = self._parse_key_dates(params.get("key_dates_raw", ""))
+
         # 执行分析
         self._result = analyze_bank_flow(
             transactions,
@@ -209,6 +212,7 @@ class MainWindow(QMainWindow):
             cash_max_days=params.get("cash_max_days", 30),
             finance_max_days=params.get("finance_max_days", 365 * 3),
             suspicion_config=sconfig,
+            key_dates=key_dates,
         )
 
         # 通联交叉分析（若已导入话单联动包）
@@ -222,7 +226,26 @@ class MainWindow(QMainWindow):
         total = len(self._result.reports)
         total_tx = sum(r.total_records for r in self._result.reports)
         dup_note = f"（去重后{uniq}张）" if uniq < total else ""
-        self._status.showMessage(f"统计完成 | {total}张卡{dup_note} {total_tx}笔交易")
+        sync_n = len(self._result.synchronized_inflows)
+        sync_note = f" | ⚠ {sync_n}组同步入账(疑分赃)" if sync_n else ""
+        self._status.showMessage(
+            f"统计完成 | {total}张卡{dup_note} {total_tx}笔交易{sync_note}")
+
+    @staticmethod
+    def _parse_key_dates(raw: str) -> list:
+        """解析 D4 关键时间点文本 '标签:YYYY-MM-DD, 标签:YYYY-MM-DD' → [(label, datetime)]"""
+        if not raw:
+            return []
+        result = []
+        for part in raw.replace("，", ",").split(","):
+            part = part.strip()
+            if not part or ":" not in part.replace("：", ":"):
+                continue
+            label, _, datestr = part.replace("：", ":").partition(":")
+            d = parse_date(datestr.strip())
+            if d is not None:
+                result.append((label.strip(), d))
+        return result
 
     # ═══ 渲染结果 ══════════════════════════════════════
 

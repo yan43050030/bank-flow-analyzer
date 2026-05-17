@@ -1,5 +1,40 @@
 # Changelog
 
+## [4.1.0] - 2026-05-17
+
+### 新增（ROADMAP D 组 — 嫌疑人维度拓展，第一批）
+
+- **D3 异常时序检测** —— `CardAnalyzer._analyze_timeseries()`
+  - **拆分洗钱**：单笔大额入账（≥20万）后 24h 内拆分为 ≥3 笔小额（<5万）流出，
+    且合计 ≥ 入账 50% → 标记
+  - **批量整数**：≥3 笔相同整额（≥1万、整千）流出 → 标记
+  - **节假日突击**：固定节日（元旦/劳动节/国庆）期间的大额交易 → 标记
+    （注：农历节日春节/中秋等需农历表，暂未覆盖）
+  - 跨卡 **同步分赃**：`detect_synchronized_inflow()` — 多张卡在同一时间窗
+    （默认 3 天）收到大额入账 → 上游按比例打款到多张代持卡的典型模式
+  - 结果存 `CardReport.timeseries_anomalies` / `AnalysisResult.synchronized_inflows`
+  - **不改 A5 可疑度评分**，D3 作为独立的异常清单展示
+- **D4 关键时间点关联** —— `CardAnalyzer._analyze_key_dates()`
+  - 用户输入招标日/合同日/调岗日等关键日期，自动扫描 ±N 天（默认 15）窗口内交易
+  - 输出每个关键点的「前/后」交易笔数、金额、大额笔数
+  - 结果存 `CardReport.key_date_hits`
+
+### 数据模型
+- `CardReport` 新增 `timeseries_anomalies` / `key_date_hits`
+- `AnalysisResult` 新增 `synchronized_inflows`
+- `analyze_bank_flow()` / `CardAnalyzer.analyze()` 新增 `key_dates` 参数
+
+### UI 变化
+- 左侧面板「统计参数」新增「关键时间点 (D4)」输入框
+  （格式 `招标日:2024-06-15, 合同日:2024-08-01`）
+- 单卡新增「⚠ 异常时序」子 Tab：D3 异常模式 + D4 关键点命中（拆分洗钱标红）
+- 分析完成后状态栏提示同步分赃组数
+
+### 测试
+- 新增 test_scenario_25~29：拆分洗钱 / 批量整数 / 节假日突击 /
+  跨卡同步分赃 / 关键时间点关联
+- 全部 29 个测试通过
+
 ## [4.0.0] - 2026-05-16
 
 ### 重大新增 — 跨软件联动（ROADMAP G 组）

@@ -131,6 +131,14 @@ class CardReport:
     consume_by_category: dict = field(default_factory=dict)  # 分类汇总
     consume_luxury_brands: list = field(default_factory=list)  # 命中品牌列表
 
+    # ── 异常时序检测 (D3) ──
+    timeseries_anomalies: list = field(default_factory=list)
+    # [{type, desc, score, txns}]，type ∈ split_laundering / batch_round / holiday_burst
+
+    # ── 关键时间点关联 (D4) ──
+    key_date_hits: dict = field(default_factory=dict)
+    # {label: {date, before, after, window_days, txns}}
+
     # ── 资金量分析（最小值法）──
     total_income: float = 0.0          # 入账合计
     total_expense: float = 0.0         # 出账合计
@@ -159,6 +167,8 @@ class AnalysisResult:
     """完整分析结果"""
     reports: List[CardReport] = field(default_factory=list)
     summary_steps: List[str] = field(default_factory=list)
+    # D3 跨卡同步分赃检测结果
+    synchronized_inflows: list = field(default_factory=list)
 
     @property
     def total_peak(self) -> float:
@@ -791,7 +801,8 @@ class CardAnalyzer:
     def analyze(self, card: str, name: str, transactions: List[Transaction],
                 tenure_start: Optional[datetime] = None,
                 tenure_end: Optional[datetime] = None,
-                suspicion_config: Optional[SuspicionConfig] = None) -> CardReport:
+                suspicion_config: Optional[SuspicionConfig] = None,
+                key_dates: Optional[list] = None) -> CardReport:
         report = CardReport(card=card, name=name)
         report.total_records = len(transactions)
         report.all_transactions = transactions
@@ -908,7 +919,136 @@ class CardAnalyzer:
         # === Step 11: 代持卡识别 (C1) ===
         self._analyze_nominee(report, transactions)
 
+        # === Step 12: 异常时序检测 (D3) ===
+        self._analyze_timeseries(report, transactions)
+
+        # === Step 13: 关键时间点关联 (D4) ===
+        if key_dates:
+            self._analyze_key_dates(report, transactions, key_dates)
+
         return report
+
+    def _analyze_timeseries(self, report: CardReport, transactions: list):
+        """D3 异常时序检测：拆分洗钱 / 批量整数 / 节假日突击
+
+        纯算法扫描，不改可疑度评分（A5 保持独立）。结果存
+        report.timeseries_anomalies，供 UI / 报告展示。
+        """
+        if not transactions:
+            return
+
+        anomalies = []
+        txs = sorted(transactions, key=lambda t: (t.date, t.row_index))
+        aml_lo, aml_hi = SuspicionConfig.AML_THRESHOLDS
+
+        # ── 模式 1: 拆分洗钱 ──
+        # 单笔大额入账 → 24h 内 ≥3 笔各 < 5万 的流出，合计 ≥ 入账的 50%
+        inflows = [t for t in txs if t.amount > 0]
+        outflows = [t for t in txs if t.amount < 0]
+        for inf in inflows:
+            if inf.amount < aml_hi:          # 大额入账门槛：≥20万
+                continue
+            window_end = inf.date + timedelta(hours=24)
+            splits = [o for o in outflows
+                      if inf.date <= o.date <= window_end
+                      and abs(o.amount) < aml_lo]   # 每笔 < 5万
+            split_sum = sum(abs(o.amount) for o in splits)
+            if len(splits) >= 3 and split_sum >= inf.amount * 0.5:
+                anomalies.append({
+                    "type": "split_laundering",
+                    "desc": (f"{inf.date.strftime('%Y-%m-%d')} 大额入账 "
+                             f"{inf.amount:,.0f} 后 24h 内拆分为 {len(splits)} "
+                             f"笔小额流出（合计 {split_sum:,.0f}）"),
+                    "score": min(30, 10 + len(splits) * 3),
+                    "txns": [inf] + splits,
+                })
+
+        # ── 模式 2: 批量整数 ──
+        # ≥3 笔相同整额（≥1万、整千）的流出
+        round_groups = defaultdict(list)
+        for o in outflows:
+            amt = abs(o.amount)
+            if amt >= 10000 and amt % 1000 == 0:
+                round_groups[amt].append(o)
+        for amt, group in round_groups.items():
+            if len(group) >= 3:
+                anomalies.append({
+                    "type": "batch_round",
+                    "desc": (f"{len(group)} 笔相同整额流出 {amt:,.0f} "
+                             f"（{group[0].date.strftime('%Y-%m-%d')} ~ "
+                             f"{group[-1].date.strftime('%Y-%m-%d')}）"),
+                    "score": min(20, len(group) * 3),
+                    "txns": list(group),
+                })
+
+        # ── 模式 3: 节假日突击 ──
+        # 固定节日（元旦/劳动节/国庆）期间的大额交易
+        # 注: 春节/中秋等农历节日需农历表，暂未覆盖
+        holiday_txns = []
+        for t in txs:
+            hol = _fixed_holiday(t.date)
+            if hol and abs(t.amount) >= aml_lo:
+                holiday_txns.append((hol, t))
+        if holiday_txns:
+            total = sum(abs(t.amount) for _, t in holiday_txns)
+            hols = sorted(set(h for h, _ in holiday_txns))
+            anomalies.append({
+                "type": "holiday_burst",
+                "desc": (f"{len(holiday_txns)} 笔大额交易发生在节假日"
+                         f"（{'/'.join(hols)}），合计 {total:,.0f}"),
+                "score": min(20, len(holiday_txns) * 4),
+                "txns": [t for _, t in holiday_txns],
+            })
+
+        report.timeseries_anomalies = anomalies
+        if anomalies:
+            report.log(f"\n--- 异常时序检测 (D3) ---")
+            for a in anomalies:
+                report.log(f"  [{a['type']}] {a['desc']} (+{a['score']}关注度)")
+
+    def _analyze_key_dates(self, report: CardReport, transactions: list,
+                           key_dates: list):
+        """D4 关键时间点关联：扫描每个关键日期 ±N 天窗口内的交易
+
+        key_dates: [(label, datetime, window_days), ...]  window_days 可省，默认 15
+        """
+        if not transactions or not key_dates:
+            return
+
+        hits = {}
+        for item in key_dates:
+            if len(item) >= 3:
+                label, kdate, win = item[0], item[1], int(item[2])
+            else:
+                label, kdate = item[0], item[1]
+                win = 15
+            lo = kdate - timedelta(days=win)
+            hi = kdate + timedelta(days=win)
+            window_txns = [t for t in transactions if lo <= t.date <= hi]
+            before = [t for t in window_txns if t.date < kdate]
+            after = [t for t in window_txns if t.date >= kdate]
+            aml_lo = SuspicionConfig.AML_THRESHOLDS[0]
+            hits[label] = {
+                "date": kdate.strftime("%Y-%m-%d"),
+                "window_days": win,
+                "txn_count": len(window_txns),
+                "before_count": len(before),
+                "after_count": len(after),
+                "before_amount": round(sum(abs(t.amount) for t in before), 2),
+                "after_amount": round(sum(abs(t.amount) for t in after), 2),
+                "large_count": sum(1 for t in window_txns
+                                   if abs(t.amount) >= aml_lo),
+                "txns": window_txns,
+            }
+
+        report.key_date_hits = hits
+        if hits:
+            report.log(f"\n--- 关键时间点关联 (D4) ---")
+            for label, h in hits.items():
+                report.log(
+                    f"  「{label}」{h['date']} ±{h['window_days']}天: "
+                    f"{h['txn_count']}笔 (前{h['before_count']}/后{h['after_count']}) "
+                    f"大额{h['large_count']}笔")
 
     def _analyze_tenure(self, report: CardReport, transactions: list,
                         t_start: datetime, t_end: datetime):
@@ -1443,7 +1583,8 @@ def analyze_bank_flow(transactions: List[Transaction],
                       finance_max_days: int = 365 * 3,
                       tenure_start: Optional[datetime] = None,
                       tenure_end: Optional[datetime] = None,
-                      suspicion_config: Optional[SuspicionConfig] = None) -> AnalysisResult:
+                      suspicion_config: Optional[SuspicionConfig] = None,
+                      key_dates: Optional[list] = None) -> AnalysisResult:
     """批量分析所有卡"""
     result = AnalysisResult()
 
@@ -1457,11 +1598,73 @@ def analyze_bank_flow(transactions: List[Transaction],
         report = analyzer.analyze(card, name, txs,
                                   tenure_start=tenure_start,
                                   tenure_end=tenure_end,
-                                  suspicion_config=suspicion_config)
+                                  suspicion_config=suspicion_config,
+                                  key_dates=key_dates)
         result.reports.append(report)
         result.summary_steps.extend(report.steps)
 
+    # D3 跨卡同步分赃检测（多张卡同期大额入账）
+    result.synchronized_inflows = detect_synchronized_inflow(result.reports)
+
     return result
+
+
+def _fixed_holiday(d: datetime) -> str:
+    """返回固定节日名称，非节日返回 ''。
+
+    仅覆盖公历固定节日。农历节日（春节/中秋/端午/清明）需农历表，未覆盖。
+    """
+    m, day = d.month, d.day
+    if (m == 1 and day <= 3) or (m == 12 and day >= 30):
+        return "元旦"
+    if m == 5 and 1 <= day <= 5:
+        return "劳动节"
+    if m == 10 and 1 <= day <= 7:
+        return "国庆"
+    return ""
+
+
+def detect_synchronized_inflow(reports: list, window_days: int = 3,
+                               threshold: float = 50000.0) -> list:
+    """D3 同步分赃检测（跨卡）：多张卡在同一时间窗内收到大额入账。
+
+    典型分赃模式：上游把钱按比例打到多张代持卡。
+    返回: [{date_start, date_end, cards, card_count, txn_count, total, txns}, ...]
+    """
+    events = []  # (date, card, tx)
+    for r in reports:
+        for t in r.all_transactions:
+            if t.amount >= threshold and t.category in ("transfer_in", "cash_in"):
+                events.append((t.date, r.card, t))
+    events.sort(key=lambda e: e[0])
+
+    groups = []
+    used = [False] * len(events)
+    for i in range(len(events)):
+        if used[i]:
+            continue
+        d0 = events[i][0]
+        cluster = [events[i]]
+        used[i] = True
+        for j in range(i + 1, len(events)):
+            if used[j]:
+                continue
+            if (events[j][0] - d0).days > window_days:
+                break
+            cluster.append(events[j])
+            used[j] = True
+        cards = sorted(set(c for _, c, _ in cluster))
+        if len(cards) >= 2:   # 跨 ≥2 张卡才算"同步"
+            groups.append({
+                "date_start": d0.strftime("%Y-%m-%d"),
+                "date_end": cluster[-1][0].strftime("%Y-%m-%d"),
+                "cards": cards,
+                "card_count": len(cards),
+                "txn_count": len(cluster),
+                "total": round(sum(abs(t.amount) for _, _, t in cluster), 2),
+                "txns": [t for _, _, t in cluster],
+            })
+    return groups
 
 
 # ═══════════════════════════════════════════════════════════
