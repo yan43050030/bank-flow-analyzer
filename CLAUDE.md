@@ -22,6 +22,8 @@
 | `SuspicionConfig` | `docs/DESIGN_DECISIONS.md#aml-阈值不可调` |
 | `_analyze_nominee` | `docs/DESIGN_DECISIONS.md#代持卡数据门槛` |
 | `_analyze_tenure` | `docs/DESIGN_DECISIONS.md#任职期资金量` |
+| `_analyze_timeseries` / `_fixed_holiday` / `detect_synchronized_inflow` | `docs/DESIGN_DECISIONS.md#异常时序检测d3` |
+| `_analyze_key_dates` | `docs/DESIGN_DECISIONS.md#关键时间点关联d4` |
 | `ConsumptionClassifier` | `docs/DESIGN_DECISIONS.md#消费分类` |
 | `CounterpartyAnalyzer` | `docs/DESIGN_DECISIONS.md#hhi-排除工资` |
 | `interop.py`（任何函数 / `SCHEMA_ID`） | `docs/INTEROP_SPEC.md` + `docs/DESIGN_DECISIONS.md#跨软件联动` |

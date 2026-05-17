@@ -100,6 +100,12 @@ class LeftPanel(QWidget):
         h2.addWidget(self.spin_fin); v.addLayout(h2)
         self.chk_small = QCheckBox("忽略小额交易 (<100元)")
         v.addWidget(self.chk_small)
+        # D4 关键时间点
+        from PySide6.QtWidgets import QLineEdit
+        v.addWidget(QLabel("关键时间点 (D4):"))
+        self.edit_key_dates = QLineEdit()
+        self.edit_key_dates.setPlaceholderText("招标日:2024-06-15, 合同日:2024-08-01")
+        v.addWidget(self.edit_key_dates)
         lv.addWidget(g3)
 
         # ── 可调阈值 (B3) ──
@@ -219,6 +225,7 @@ class LeftPanel(QWidget):
             "cash_max_days": self.spin_cash.value(),
             "finance_max_days": self.spin_fin.value(),
             "skip_small": self.chk_small.isChecked(),
+            "key_dates_raw": self.edit_key_dates.text().strip(),
         }
         bl = self.edit_blacklist.text().strip()
         config = {
