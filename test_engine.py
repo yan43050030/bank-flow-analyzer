@@ -794,6 +794,126 @@ def test_scenario_29_key_dates():
     print("✅ 测试29通过")
 
 
+def _tx(date, card, raw, amount, holder_id="", cp_acct="", cp=""):
+    """D1 测试用：带 holder_id_card / counterparty_account 的交易"""
+    return Transaction(
+        date=datetime.strptime(date, "%Y-%m-%d"), card=card, name="嫌疑人",
+        raw_type=raw, amount=amount, counterparty=cp,
+        holder_id_card=holder_id, counterparty_account=cp_acct)
+
+
+def test_scenario_34_interop_entity_idcard():
+    """D1×G1: 联动导出的 entities 应带上持卡人身份证（强二级关联键）"""
+    print("\n" + "=" * 60)
+    print("测试34: 联动导出实体携带身份证（D1×G1）")
+    print("=" * 60)
+
+    ID = "110101199001011234"
+    txs = [_tx("2024-01-01", "6222", "工资", 50000, holder_id=ID)]
+    r = analyze_bank_flow(txs).reports[0]
+    pkg = build_export_package([r], case_name="测试案件")
+    print(f"实体数: {len(pkg.entities)}")
+    ent = pkg.entities[0]
+    print(f"  实体: name={ent['name']} id_card={ent['id_card']} accounts={ent['accounts']}")
+    assert ent["id_card"] == ID, f"实体应带持卡人身份证: {ent['id_card']}"
+    print("✅ 测试34通过")
+
+
+def test_scenario_30_suspect_aggregation():
+    """D1: 同一身份证名下多张卡聚合成一个嫌疑人"""
+    print("\n" + "=" * 60)
+    print("测试30: 嫌疑人画像聚合（D1）")
+    print("=" * 60)
+
+    ID = "110101199001011234"
+    txs = [
+        _tx("2024-01-01", "卡A", "工资", 50000, holder_id=ID),
+        _tx("2024-02-01", "卡A", "消费", -2000, holder_id=ID, cp="商场"),
+        _tx("2024-01-05", "卡B", "转账", 30000, holder_id=ID, cp="某人"),
+    ]
+    result = analyze_bank_flow(txs)
+    print(f"卡报告数: {len(result.reports)}  嫌疑人数: {len(result.suspects)}")
+    assert len(result.suspects) == 1, f"应聚合为 1 个嫌疑人: {len(result.suspects)}"
+    s = result.suspects[0]
+    print(f"嫌疑人: {s.name} 身份证{s.id_card} 名下 {s.card_count} 张卡: {s.cards}")
+    print(f"合并交易笔数: {s.total_records}  合并资金量: {s.combined_fund_size:,.0f}")
+    assert s.card_count == 2, f"应有 2 张卡: {s.card_count}"
+    assert s.total_records == 3
+    print("✅ 测试30通过")
+
+
+def test_scenario_31_inter_card_transfer_excluded():
+    """D1: 卡间互转（本人 A 卡转 B 卡）不计入合并资金量"""
+    print("\n" + "=" * 60)
+    print("测试31: 卡间互转剔除（D1）")
+    print("=" * 60)
+
+    ID = "110101199001011234"
+    txs = [
+        # 卡A：存 10 万，再转 10 万到本人卡B
+        _tx("2024-01-01", "卡A", "存款", 100000, holder_id=ID),
+        _tx("2024-01-02", "卡A", "转账", -100000, holder_id=ID, cp_acct="卡B", cp="本人卡B"),
+        # 卡B：收到 A 转来的 10 万，再转 5 万给外人
+        _tx("2024-01-02", "卡B", "转账", 100000, holder_id=ID, cp_acct="卡A", cp="本人卡A"),
+        _tx("2024-01-03", "卡B", "转账", -50000, holder_id=ID, cp="外人"),
+    ]
+    result = analyze_bank_flow(txs)
+    s = result.suspects[0]
+    print(f"合并资金量: {s.combined_fund_size:,.0f} (期望 100,000 — 同一笔10万)")
+    print(f"卡间互转额: {s.inter_card_transfer:,.0f} (期望 100,000)")
+    # 各卡单独 fund_size 之和会是 20 万（重复计），聚合后应为 10 万
+    per_card_sum = sum(r.fund_size for r in result.reports)
+    print(f"对照：各卡 fund_size 之和 = {per_card_sum:,.0f}（含重复）")
+
+    assert s.combined_fund_size == 100000, \
+        f"合并资金量应为10万(剔除卡间互转): {s.combined_fund_size}"
+    assert s.inter_card_transfer == 100000
+    print("✅ 测试31通过")
+
+
+def test_scenario_32_separate_persons():
+    """D1: 不同身份证的卡不被聚合"""
+    print("\n" + "=" * 60)
+    print("测试32: 不同人不聚合（D1）")
+    print("=" * 60)
+
+    txs = [
+        _tx("2024-01-01", "卡A", "工资", 50000, holder_id="110101199001011234"),
+        _tx("2024-01-01", "卡B", "工资", 60000, holder_id="220202199002022345"),
+    ]
+    result = analyze_bank_flow(txs)
+    print(f"嫌疑人数: {len(result.suspects)} (期望 2)")
+    assert len(result.suspects) == 2, f"两个不同身份证应是 2 个人: {len(result.suspects)}"
+    print("✅ 测试32通过")
+
+
+def test_scenario_33_suspect_max_scores():
+    """D1: 嫌疑人取名下多卡的最高可疑度/代持分"""
+    print("\n" + "=" * 60)
+    print("测试33: 嫌疑人最高可疑度聚合（D1）")
+    print("=" * 60)
+
+    ID = "110101199001011234"
+    txs = [
+        # 卡A：正常工资 → 低可疑
+        _tx("2024-01-01", "卡A", "工资", 8000, holder_id=ID),
+        # 卡B：多笔阈值规避 49000 → 高可疑
+        _tx("2024-02-01", "卡B", "存款", 49000, holder_id=ID),
+        _tx("2024-02-02", "卡B", "存款", 49000, holder_id=ID),
+        _tx("2024-02-03", "卡B", "存款", 49000, holder_id=ID),
+        _tx("2024-02-04", "卡B", "存款", 199000, holder_id=ID),
+        _tx("2024-02-05", "卡B", "取款", -199000, holder_id=ID),
+    ]
+    result = analyze_bank_flow(txs)
+    s = result.suspects[0]
+    card_scores = {r.card: r.suspicion_score for r in result.reports}
+    print(f"各卡可疑度: {card_scores}")
+    print(f"嫌疑人 max_suspicion: {s.max_suspicion:.0f} {s.max_suspicion_label}")
+    assert s.max_suspicion == max(card_scores.values()), \
+        f"应取多卡最高可疑度: {s.max_suspicion}"
+    print("✅ 测试33通过")
+
+
 if __name__ == "__main__":
     test_scenario_1()
     test_scenario_2()
@@ -824,5 +944,10 @@ if __name__ == "__main__":
     test_scenario_27_holiday_burst()
     test_scenario_28_synchronized_inflow()
     test_scenario_29_key_dates()
+    test_scenario_30_suspect_aggregation()
+    test_scenario_31_inter_card_transfer_excluded()
+    test_scenario_32_separate_persons()
+    test_scenario_33_suspect_max_scores()
+    test_scenario_34_interop_entity_idcard()
     print("\n" + "=" * 60)
     print("🎉 所有测试完成")

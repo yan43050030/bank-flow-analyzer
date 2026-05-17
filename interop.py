@@ -130,8 +130,13 @@ def _bank_entities(existing: list, reports: list) -> list:
     """
     entities = [dict(e) for e in existing]  # 深拷贝顶层，避免改到入参
     for r in reports:
+        holder_id = (getattr(r, "holder_id_card", "") or "").strip()
         match = None
         for e in entities:
+            # 关联键优先级：身份证 > 账号 > 姓名（与 INTEROP_SPEC.md 一致）
+            if holder_id and e.get("id_card") == holder_id:
+                match = e
+                break
             if r.card and r.card in (e.get("accounts") or []):
                 match = e
                 break
@@ -142,11 +147,13 @@ def _bank_entities(existing: list, reports: list) -> list:
             accts = match.setdefault("accounts", [])
             if r.card and r.card not in accts:
                 accts.append(r.card)
+            if holder_id and not match.get("id_card"):
+                match["id_card"] = holder_id
         else:
             entities.append({
                 "id": f"B{len(entities) + 1}",
                 "name": r.name or "",
-                "id_card": "",
+                "id_card": holder_id,
                 "phones": [],
                 "accounts": [r.card] if r.card else [],
                 "role": "对象",
