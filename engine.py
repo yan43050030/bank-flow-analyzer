@@ -222,6 +222,8 @@ class AnalysisResult:
     synchronized_inflows: list = field(default_factory=list)
     # D1 嫌疑人画像聚合结果
     suspects: List[SuspectReport] = field(default_factory=list)
+    # D2 N 跳资金链追踪结果
+    fund_chains: list = field(default_factory=list)
 
     @property
     def total_peak(self) -> float:
@@ -1803,6 +1805,9 @@ def analyze_bank_flow(transactions: List[Transaction],
     # D1 嫌疑人画像聚合（按身份证/姓名合并多卡），用去重后的报告
     result.suspects = aggregate_suspects(result.unique_reports)
 
+    # D2 N 跳资金链追踪（A→B→C 多层过桥识别）
+    result.fund_chains = trace_fund_chains(transactions)
+
     return result
 
 
@@ -2029,3 +2034,114 @@ def generate_report(report: CardReport, title: str = "银行流水分析报告")
     w("<li>对手分析 = 对公/个人自动分类 + 双向检测 + HHI 集中度</li>")
     w("</ul></div></body></html>")
     return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# N 跳资金链追踪 (D2)
+# ═══════════════════════════════════════════════════════════
+
+def trace_fund_chains(
+        transactions: List[Transaction],
+        sources: Optional[set] = None,
+        max_hops: int = 5,
+        window_hours: float = 72.0,
+        min_amount: float = 50000.0,
+        similarity_min: float = 0.5) -> list:
+    """D2 N 跳资金链追踪：A→B→C→D 多层过桥识别（找最终受益人）
+
+    CRITICAL: 修改前必读 docs/DESIGN_DECISIONS.md#n-跳资金链追踪d2
+      - 关联键优先用 counterparty_account（卡号最可靠），降级用 counterparty 名字
+      - 时间窗约束：下游必须在上游收款后 window_hours 内转出（默认 72h）
+      - 金额相似度：下游金额 ≥ 上游金额 × similarity_min（默认 50%，允许"过桥费"扣减）
+      - max_hops 避免指数爆炸（默认 5）
+      - 起点≥min_amount 的大额（默认 5 万 AML 阈值）
+      - 只输出最大链（不能再扩展的），不输出每个前缀子链
+
+    参数:
+      transactions: 全部交易（B1 多银行合并后的完整流水）
+      sources: 起点账户集合（None = 所有有大额转出的账户）
+
+    返回（按跳数+金额降序）:
+      [{chain, hops, total_amount, time_span_hours, amount_stability,
+        start_card, end_destination}, ...]
+    """
+    # 按 card 索引转出交易（按时间排序）
+    outgoing_by_card: Dict[str, list] = defaultdict(list)
+    for t in transactions:
+        if t.amount < 0:
+            outgoing_by_card[t.card].append(t)
+    for k in outgoing_by_card:
+        outgoing_by_card[k].sort(key=lambda t: t.date)
+
+    def next_id(tx: Transaction) -> str:
+        """识别下游账户：优先对手账号，降级对手名"""
+        return ((tx.counterparty_account or "").strip()
+                or (tx.counterparty or "").strip())
+
+    raw_chains = []   # [[tx, tx, ...], ...]
+
+    def dfs(path: list, current_card: str,
+            last_amount: float, last_time: datetime):
+        if len(path) >= max_hops:
+            raw_chains.append(path[:])
+            return
+        window_end = last_time + timedelta(hours=window_hours)
+        amount_floor = last_amount * similarity_min
+        candidates = [t for t in outgoing_by_card.get(current_card, [])
+                      if last_time <= t.date <= window_end
+                      and abs(t.amount) >= amount_floor]
+        if not candidates:
+            raw_chains.append(path[:])
+            return
+        for nxt in candidates:
+            new_path = path + [nxt]
+            nid = next_id(nxt)
+            if nid in outgoing_by_card:
+                dfs(new_path, nid, abs(nxt.amount), nxt.date)
+            else:
+                raw_chains.append(new_path)  # 终点不在数据里
+
+    # 起点：满足 amount ≥ min_amount 且（无限制或 sources 指定）的转出交易
+    for st in transactions:
+        if st.amount > -min_amount:
+            continue
+        if sources is not None and st.card not in sources:
+            continue
+        nid = next_id(st)
+        if nid in outgoing_by_card:
+            dfs([st], nid, abs(st.amount), st.date)
+        # 下游不在数据里 → 单跳无追踪意义，跳过
+
+    # 至少 2 跳；按 tx id 元组去重
+    seen = set()
+    chains = []
+    for c in raw_chains:
+        if len(c) < 2:
+            continue
+        key = tuple(id(t) for t in c)
+        if key not in seen:
+            seen.add(key)
+            chains.append(c)
+
+    # 汇总每条链的元信息
+    results = []
+    for chain in chains:
+        amts = [abs(t.amount) for t in chain]
+        total = sum(amts)
+        span = (chain[-1].date - chain[0].date).total_seconds() / 3600.0
+        stability = min(amts) / max(amts) if max(amts) > 0 else 0
+        results.append({
+            "chain": chain,
+            "hops": len(chain),
+            "total_amount": round(total, 2),
+            "time_span_hours": round(span, 2),
+            "amount_stability": round(stability, 3),
+            "start_card": chain[0].card,
+            "end_destination": next_id(chain[-1]),
+        })
+
+    # 跳数多 + 金额大 + 金额稳定 优先
+    results.sort(key=lambda r: (r["hops"], r["total_amount"],
+                                r["amount_stability"]),
+                 reverse=True)
+    return results

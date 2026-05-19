@@ -9,7 +9,8 @@ from datetime import datetime
 from engine import (
     Transaction, TransactionClassifier,
     CashChainMatcher, FinanceMatcher,
-    CardAnalyzer, analyze_bank_flow
+    CardAnalyzer, analyze_bank_flow,
+    trace_fund_chains,
 )
 from interop import (
     SCHEMA_ID, InteropPackage, InteropError,
@@ -820,6 +821,109 @@ def test_scenario_34_interop_entity_idcard():
     print("✅ 测试34通过")
 
 
+def test_scenario_45_fund_chain_three_hops():
+    """D2: A→B→C→外 三跳资金链追踪"""
+    print("\n" + "=" * 60)
+    print("测试45: 三跳资金链追踪（D2）")
+    print("=" * 60)
+
+    txs = [
+        # 卡A 转 50万 给卡B (大额起点)
+        Transaction(date=datetime(2024, 1, 1, 10, 0), card="卡A", name="某甲",
+                    raw_type="转账", amount=-500000, counterparty="某乙",
+                    counterparty_account="卡B"),
+        # 卡B 5h 后转 45万 给卡C（金额 0.9 倍，通过相似度门槛）
+        Transaction(date=datetime(2024, 1, 1, 15, 0), card="卡B", name="某乙",
+                    raw_type="转账", amount=-450000, counterparty="某丙",
+                    counterparty_account="卡C"),
+        # 卡C 次日转 40万 给外部卡D（不在本数据里 → 终点）
+        Transaction(date=datetime(2024, 1, 2, 10, 0), card="卡C", name="某丙",
+                    raw_type="转账", amount=-400000, counterparty="某丁",
+                    counterparty_account="卡D"),
+        # 干扰：无关交易
+        Transaction(date=datetime(2024, 1, 1, 10, 0), card="卡X", name="戊",
+                    raw_type="工资", amount=8000),
+    ]
+    chains = trace_fund_chains(txs, min_amount=300000, window_hours=72)
+    print(f"检出 {len(chains)} 条资金链")
+    for c in chains:
+        print(f"  {c['hops']} 跳, 起{c['start_card']} → 终{c['end_destination']}, "
+              f"总{c['total_amount']:,.0f} 时间跨度{c['time_span_hours']:.0f}h")
+    longest = max(chains, key=lambda c: c["hops"])
+    assert longest["hops"] == 3
+    assert longest["start_card"] == "卡A"
+    assert longest["end_destination"] == "卡D"
+    assert longest["amount_stability"] >= 0.7, "金额相对稳定（差额≤过桥费）"
+    print("✅ 测试45通过")
+
+
+def test_scenario_46_fund_chain_window_filter():
+    """D2: 超出时间窗的转账不构成链"""
+    print("\n" + "=" * 60)
+    print("测试46: 时间窗约束（D2）")
+    print("=" * 60)
+
+    txs = [
+        Transaction(date=datetime(2024, 1, 1, 10, 0), card="卡A", name="甲",
+                    raw_type="转账", amount=-500000, counterparty="乙",
+                    counterparty_account="卡B"),
+        # 卡B 5 天后才转出 → 超出 72h 默认窗口
+        Transaction(date=datetime(2024, 1, 6, 10, 0), card="卡B", name="乙",
+                    raw_type="转账", amount=-450000, counterparty="丙",
+                    counterparty_account="卡C"),
+    ]
+    chains = trace_fund_chains(txs, min_amount=300000, window_hours=72)
+    print(f"链数: {len(chains)} (期望 0)")
+    assert len(chains) == 0, "时间窗外不应构成链"
+    print("✅ 测试46通过")
+
+
+def test_scenario_47_fund_chain_similarity_filter():
+    """D2: 金额骤降的转账不算同一笔过桥"""
+    print("\n" + "=" * 60)
+    print("测试47: 金额相似度约束（D2）")
+    print("=" * 60)
+
+    txs = [
+        # 卡A 转 50万 给卡B
+        Transaction(date=datetime(2024, 1, 1, 10, 0), card="卡A", name="甲",
+                    raw_type="转账", amount=-500000, counterparty="乙",
+                    counterparty_account="卡B"),
+        # 卡B 转出 仅 5 千（远低于 50% × 50万 = 25万）→ 不应判为同一笔过桥
+        Transaction(date=datetime(2024, 1, 1, 15, 0), card="卡B", name="乙",
+                    raw_type="转账", amount=-5000, counterparty="丙",
+                    counterparty_account="卡C"),
+    ]
+    chains = trace_fund_chains(txs, min_amount=300000, similarity_min=0.5)
+    print(f"链数: {len(chains)} (期望 0)")
+    assert len(chains) == 0, "金额相似度不足不应构成链"
+    print("✅ 测试47通过")
+
+
+def test_scenario_48_fund_chain_in_analyze_bank_flow():
+    """D2: analyze_bank_flow 自动产出 result.fund_chains"""
+    print("\n" + "=" * 60)
+    print("测试48: D2 集成到 analyze_bank_flow")
+    print("=" * 60)
+
+    txs = [
+        Transaction(date=datetime(2024, 1, 1, 10, 0), card="卡A", name="甲",
+                    raw_type="转账", amount=-500000, counterparty="乙",
+                    counterparty_account="卡B"),
+        Transaction(date=datetime(2024, 1, 1, 15, 0), card="卡B", name="乙",
+                    raw_type="转账", amount=-450000, counterparty="丙",
+                    counterparty_account="卡C"),
+        Transaction(date=datetime(2024, 1, 2, 10, 0), card="卡C", name="丙",
+                    raw_type="转账", amount=-400000, counterparty="丁",
+                    counterparty_account="卡D"),
+    ]
+    result = analyze_bank_flow(txs)
+    print(f"result.fund_chains: {len(result.fund_chains)} 条")
+    assert len(result.fund_chains) >= 1, "analyze_bank_flow 应自动产出 fund_chains"
+    assert result.fund_chains[0]["hops"] == 3
+    print("✅ 测试48通过")
+
+
 def test_scenario_44_multibank_merge():
     """B1: 多家银行流水合并分析 — 同一人不同银行的卡能聚合"""
     print("\n" + "=" * 60)
@@ -1263,5 +1367,9 @@ if __name__ == "__main__":
     test_scenario_42_audit_log_export()
     test_scenario_43_audit_log_no_raw_data()
     test_scenario_44_multibank_merge()
+    test_scenario_45_fund_chain_three_hops()
+    test_scenario_46_fund_chain_window_filter()
+    test_scenario_47_fund_chain_similarity_filter()
+    test_scenario_48_fund_chain_in_analyze_bank_flow()
     print("\n" + "=" * 60)
     print("🎉 所有测试完成")
