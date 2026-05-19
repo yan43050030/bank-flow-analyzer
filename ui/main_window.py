@@ -32,6 +32,7 @@ from ui.widgets.summary_tab import SummaryTab
 from ui.widgets.card_tab import CardTab
 from ui.widgets.interop_tab import InteropTab
 from ui.widgets.suspect_tab import SuspectTab
+from ui.widgets.fund_chain_tab import FundChainTab
 
 
 class MainWindow(QMainWindow):
@@ -318,6 +319,13 @@ class MainWindow(QMainWindow):
             self._tabs.addTab(interop_tab, "🔗 通联交叉")
             self._tab_kinds.append("interop")
 
+        # ── 资金链 Tab（D2，仅在检测到 N 跳链时显示）──
+        if self._result.fund_chains:
+            fc_tab = FundChainTab()
+            fc_tab.load(self._result.fund_chains)
+            self._tabs.addTab(fc_tab, "🔗 资金链")
+            self._tab_kinds.append("fund_chain")
+
         # ── 各卡 Tab ──
         for i, r in enumerate(reports):
             ct = CardTab()
@@ -379,6 +387,16 @@ class MainWindow(QMainWindow):
                 ("🔗 关联转账数", f"{n}"),
                 ("⭐ 核心关系数", f"{core}"),
                 ("📞 已导入通话", f"{len(self._interop_pkg.call_events)}"),
+            ])
+        elif kind == "fund_chain":
+            chains = self._result.fund_chains
+            deep = sum(1 for c in chains if c["hops"] >= 3)
+            self._fund_header.set_fund_text(
+                f"🔗 资金链追踪 — {len(chains)} 条链, {deep} 条 ≥3 跳过桥")
+            self._fund_header.set_cards([
+                ("链条总数", f"{len(chains)}"),
+                ("≥3 跳过桥", f"{deep}"),
+                ("最长链", f"{max((c['hops'] for c in chains), default=0)} 跳"),
             ])
         else:
             # ("card", report)
