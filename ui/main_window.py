@@ -23,6 +23,7 @@ from interop import (
     build_export_package, reports_to_transaction_events,
     analyze_transfer_call_correlation, analyze_relationship_strength,
 )
+from audit import AuditLogger
 from ui.theme_manager import ThemeManager
 from ui.parsers import parse_amount, parse_date, resolve_direction
 from ui.widgets.left_panel import LeftPanel
@@ -49,6 +50,7 @@ class MainWindow(QMainWindow):
         self._last_large_threshold: float = 50000.0
         self._has_interop_tab: bool = False
         self._tab_kinds: list = []        # 与 _tabs 一一对应的种类标签
+        self._audit = AuditLogger()       # C3 审计日志（程序合法性证据）
         self.tm = ThemeManager()
 
         self.setWindowTitle(f"{APP_NAME} v{__version__}")
@@ -73,6 +75,7 @@ class MainWindow(QMainWindow):
         self._left.report_requested.connect(self._export_report)
         self._left.interop_import_requested.connect(self._on_interop_import)
         self._left.interop_export_requested.connect(self._on_interop_export)
+        self._left.audit_export_requested.connect(self._on_export_audit)
         root.addWidget(self._left)
 
         # 右侧 — 包裹在 ScrollArea 中支持横向滚动
@@ -152,6 +155,9 @@ class MainWindow(QMainWindow):
         self._df = df
         self._current_file = path
         self._status.showMessage(f"导入: {os.path.basename(path)} | {len(df)} 行")
+        self._audit.log("data_import",
+                        file=os.path.basename(path), rows=len(df),
+                        columns=len(df.columns))
 
     def _on_run_requested(self, mappings: dict, params: dict, config: dict):
         if self._df is None:
@@ -234,6 +240,14 @@ class MainWindow(QMainWindow):
         sync_note = f" | ⚠ {sync_n}组同步入账(疑分赃)" if sync_n else ""
         self._status.showMessage(
             f"统计完成 | {total}张卡{dup_note} {total_tx}笔交易{sync_note}")
+        self._audit.log(
+            "analyze",
+            file=os.path.basename(self._current_file),
+            cards=total, unique_cards=uniq, txns=total_tx,
+            suspects=len(self._result.suspects),
+            sync_inflow_groups=sync_n,
+            large_threshold=self._last_large_threshold,
+            mapping_fields=[k for k, v in mappings.items() if v])
 
     @staticmethod
     def _parse_key_dates(raw: str) -> list:
@@ -396,6 +410,8 @@ class MainWindow(QMainWindow):
             with open(path, "w", encoding="utf-8") as f:
                 f.write("\n".join(all_html))
             self._status.showMessage(f"报告已导出: {path}")
+            self._audit.log("export_report", path=os.path.basename(path),
+                            cards=len(self._result.unique_reports))
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
 
@@ -427,6 +443,8 @@ class MainWindow(QMainWindow):
                 })
             pd.DataFrame(data).to_excel(path, sheet_name="资金汇总", index=False)
             self._status.showMessage(f"导出成功: {path}")
+            self._audit.log("export_xlsx", path=os.path.basename(path),
+                            cards=len(self._result.reports))
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
 
@@ -455,12 +473,20 @@ class MainWindow(QMainWindow):
             pkg = load_interop_package(path)
         except InteropError as e:
             QMessageBox.critical(self, "联动包导入失败", str(e))
+            self._audit.log("interop_import_failed",
+                            path=os.path.basename(path), error=str(e)[:120])
             return
         self._interop_pkg = pkg
         self._status.showMessage(
             f"已导入联动包: {os.path.basename(path)} | "
             f"实体{len(pkg.entities)} 通话{len(pkg.call_events)} "
             f"短信{len(pkg.sms_events)}")
+        self._audit.log("interop_import",
+                        path=os.path.basename(path),
+                        case=pkg.case_name,
+                        entities=len(pkg.entities),
+                        calls=len(pkg.call_events),
+                        sms=len(pkg.sms_events))
         QMessageBox.information(
             self, "联动包已导入",
             f"案件: {pkg.case_name or '(未命名)'}\n"
@@ -490,5 +516,25 @@ class MainWindow(QMainWindow):
             save_interop_package(pkg, path)
             self._status.showMessage(
                 f"联动包已导出: {path} | 交易{len(pkg.transaction_events)}条")
+            self._audit.log("interop_export",
+                            path=os.path.basename(path),
+                            case=pkg.case_name,
+                            txns=len(pkg.transaction_events),
+                            entities=len(pkg.entities))
         except Exception as e:
             QMessageBox.critical(self, "联动包导出失败", str(e))
+
+    # ═══ 审计日志 (C3) ═══════════════════════════════════
+
+    def _on_export_audit(self):
+        """导出审计日志（程序合法性证据）"""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出审计日志", "audit-log.jsonl", "JSONL (*.jsonl);;All (*)")
+        if not path:
+            return
+        try:
+            count = self._audit.export(path)
+            self._status.showMessage(
+                f"审计日志已导出: {path} | {count} 条记录")
+        except Exception as e:
+            QMessageBox.critical(self, "审计日志导出失败", str(e))

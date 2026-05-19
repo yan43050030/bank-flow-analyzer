@@ -17,6 +17,7 @@ from interop import (
     reports_to_transaction_events, build_export_package,
     analyze_transfer_call_correlation, analyze_relationship_strength,
 )
+from audit import AuditLogger
 
 
 def make_tx(date_str, card, raw_type, amount, name="测试", cp="", rmk=""):
@@ -819,6 +820,98 @@ def test_scenario_34_interop_entity_idcard():
     print("✅ 测试34通过")
 
 
+def test_scenario_41_audit_log_append_only():
+    """C3: 审计日志 append-only，多条记录顺序保留"""
+    print("\n" + "=" * 60)
+    print("测试41: 审计日志写入与读取（C3）")
+    print("=" * 60)
+
+    with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False, mode="w") as f:
+        tmp = f.name
+    os.unlink(tmp)   # 让 AuditLogger 从空文件开始
+    try:
+        log = AuditLogger(log_file=tmp)
+        log.log("data_import", file="test.xlsx", rows=500)
+        log.log("analyze", cards=3, txns=500, large_threshold=50000)
+        log.log("export_xlsx", path="result.xlsx", cards=3)
+        entries = log.read_all()
+        print(f"写入 3 条 → 读出 {len(entries)} 条")
+        for e in entries:
+            print(f"  [{e['ts'][:19]}] {e['op']} {e}")
+        assert len(entries) == 3
+        assert entries[0]["op"] == "data_import"
+        assert entries[1]["op"] == "analyze"
+        assert entries[2]["op"] == "export_xlsx"
+        # 顺序保留
+        assert [e["op"] for e in entries] == ["data_import", "analyze", "export_xlsx"]
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    print("✅ 测试41通过")
+
+
+def test_scenario_42_audit_log_export():
+    """C3: 审计日志导出为单独文件（法庭证据材料）"""
+    print("\n" + "=" * 60)
+    print("测试42: 审计日志导出（C3）")
+    print("=" * 60)
+
+    with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False, mode="w") as f:
+        src = f.name
+    os.unlink(src)
+    target = src + ".export"
+    try:
+        log = AuditLogger(log_file=src)
+        log.log("interop_import", path="案件.json", calls=120)
+        log.log("interop_export", path="案件交换包.json", txns=500)
+        count = log.export(target)
+        print(f"导出 {count} 条到 {target}")
+        assert count == 2
+        # 导出的文件内容与源一致
+        with open(target, encoding="utf-8") as f:
+            lines = [json.loads(l) for l in f if l.strip()]
+        assert len(lines) == 2
+        assert lines[0]["op"] == "interop_import"
+        assert lines[1]["op"] == "interop_export"
+    finally:
+        for p in (src, target):
+            if os.path.exists(p):
+                os.unlink(p)
+    print("✅ 测试42通过")
+
+
+def test_scenario_43_audit_log_no_raw_data():
+    """C3: 审计日志只记元信息，不含原始流水内容（数据隐私）"""
+    print("\n" + "=" * 60)
+    print("测试43: 审计日志不泄露原始数据（C3）")
+    print("=" * 60)
+
+    with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False, mode="w") as f:
+        tmp = f.name
+    os.unlink(tmp)
+    try:
+        log = AuditLogger(log_file=tmp)
+        # 模拟正常使用（只传元信息）
+        log.log("data_import", file="嫌疑人流水.xlsx", rows=2000)
+        log.log("analyze", cards=5, txns=2000, large_threshold=50000)
+
+        # 读出来检查不含敏感数据特征
+        with open(tmp, encoding="utf-8") as f:
+            content = f.read()
+        print(f"日志内容前200字: {content[:200]}")
+        # 不含卡号（16/19 位数字串）
+        import re as _re
+        assert not _re.search(r"\b62\d{14,17}\b", content), \
+            "审计日志不应含卡号"
+        # 不含身份证号（18 位）
+        assert not _re.search(r"\b\d{17}[\dXx]\b", content), \
+            "审计日志不应含身份证号"
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    print("✅ 测试43通过")
+
+
 def test_scenario_39_relationship_core():
     """G3: 资金+通讯双密切 → 核心关系；只占一边 → 非核心"""
     print("\n" + "=" * 60)
@@ -1118,5 +1211,8 @@ if __name__ == "__main__":
     test_scenario_38_asset_clue_aggregation()
     test_scenario_39_relationship_core()
     test_scenario_40_relationship_in_export()
+    test_scenario_41_audit_log_append_only()
+    test_scenario_42_audit_log_export()
+    test_scenario_43_audit_log_no_raw_data()
     print("\n" + "=" * 60)
     print("🎉 所有测试完成")
