@@ -914,6 +914,98 @@ def test_scenario_33_suspect_max_scores():
     print("✅ 测试33通过")
 
 
+def test_scenario_35_asset_clue_property():
+    """D5: 房产线索识别 — 物业费/水电费/房产交易"""
+    print("\n" + "=" * 60)
+    print("测试35: 房产线索识别（D5）")
+    print("=" * 60)
+    from engine import AssetClueDetector
+
+    cases = [
+        ("某某物业管理有限公司", "", "房产-物业", "高"),
+        ("XX市自来水公司", "", "房产-水费", "高"),
+        ("国家电网XX供电公司", "电费", "房产-电费", "高"),
+        ("XX房地产开发有限公司", "购房款", "房产-交易", "高"),
+        ("税务局", "契税", "房产-税费", "高"),
+    ]
+    for cp, rmk, exp_cat, exp_conf in cases:
+        tx = make_tx("2024-01-01", "6222", "转账", -5000, cp=cp, rmk=rmk)
+        clues = AssetClueDetector.classify_transaction(tx)
+        cats = [(c["category"], c["confidence"]) for c in clues]
+        print(f"  对手={cp:24s} 备注={rmk:8s} → {cats}")
+        assert any(c["category"] == exp_cat and c["confidence"] == exp_conf
+                   for c in clues), f"应命中 {exp_cat}({exp_conf}): {cats}"
+    print("✅ 测试35通过")
+
+
+def test_scenario_36_asset_clue_vehicle():
+    """D5: 车辆线索识别 — 4S店/车险/违章"""
+    print("\n" + "=" * 60)
+    print("测试36: 车辆线索识别（D5）")
+    print("=" * 60)
+    from engine import AssetClueDetector
+
+    cases = [
+        ("XX汽车销售服务有限公司", "购车款", "车辆-购置"),
+        ("中国人保", "车险保费", "车辆-保险"),
+        ("XX市交警支队", "交通违法罚款", "车辆-使用"),
+    ]
+    for cp, rmk, exp_cat in cases:
+        tx = make_tx("2024-01-01", "6222", "转账", -8000, cp=cp, rmk=rmk)
+        clues = AssetClueDetector.classify_transaction(tx)
+        cats = [c["category"] for c in clues]
+        print(f"  对手={cp:26s} 备注={rmk:10s} → {cats}")
+        assert exp_cat in cats, f"应命中 {exp_cat}: {cats}"
+    print("✅ 测试36通过")
+
+
+def test_scenario_37_asset_clue_exclusion():
+    """D5: 排除词压制误报 — '水产/水利/电器' 不应被当成水电费线索"""
+    print("\n" + "=" * 60)
+    print("测试37: 资产线索排除词（D5）")
+    print("=" * 60)
+    from engine import AssetClueDetector
+
+    # 这些对手名含"水"/"电"字，但不是水电费缴纳
+    false_positives = [
+        ("XX市水产养殖有限公司", ""),
+        ("XX水利水电工程公司", ""),
+        ("XX家用电器销售公司", ""),
+        ("XX电子科技有限公司", ""),
+    ]
+    for cp, rmk in false_positives:
+        tx = make_tx("2024-01-01", "6222", "转账", -5000, cp=cp, rmk=rmk)
+        clues = AssetClueDetector.classify_transaction(tx)
+        cats = [c["category"] for c in clues]
+        print(f"  对手={cp:26s} → {cats if cats else '无误报 ✓'}")
+        assert "房产-水费" not in cats, f"{cp} 不应判为水费: {cats}"
+        assert "房产-电费" not in cats, f"{cp} 不应判为电费: {cats}"
+    print("✅ 测试37通过")
+
+
+def test_scenario_38_asset_clue_aggregation():
+    """D5: 资产线索聚合到嫌疑人 — 多卡线索合并"""
+    print("\n" + "=" * 60)
+    print("测试38: 资产线索聚合到嫌疑人（D5×D1）")
+    print("=" * 60)
+
+    ID = "110101199001011234"
+    txs = [
+        _tx("2024-01-01", "卡A", "转账", -3000, holder_id=ID, cp="某物业管理公司"),
+        _tx("2024-02-01", "卡A", "转账", -200000, holder_id=ID, cp="XX房地产开发公司"),
+        _tx("2024-03-01", "卡B", "转账", -8000, holder_id=ID, cp="XX汽车销售有限公司"),
+    ]
+    result = analyze_bank_flow(txs)
+    s = result.suspects[0]
+    print(f"嫌疑人名下 {s.card_count} 张卡")
+    print(f"房产线索: {s.property_clue_count} 条, 车辆线索: {s.vehicle_clue_count} 条")
+    for c in s.asset_clues:
+        print(f"  [{c['confidence']}] {c['category']} ← {c['keyword']}")
+    assert s.property_clue_count >= 2, f"应有 ≥2 条房产线索: {s.property_clue_count}"
+    assert s.vehicle_clue_count >= 1, f"应有 ≥1 条车辆线索: {s.vehicle_clue_count}"
+    print("✅ 测试38通过")
+
+
 if __name__ == "__main__":
     test_scenario_1()
     test_scenario_2()
@@ -949,5 +1041,9 @@ if __name__ == "__main__":
     test_scenario_32_separate_persons()
     test_scenario_33_suspect_max_scores()
     test_scenario_34_interop_entity_idcard()
+    test_scenario_35_asset_clue_property()
+    test_scenario_36_asset_clue_vehicle()
+    test_scenario_37_asset_clue_exclusion()
+    test_scenario_38_asset_clue_aggregation()
     print("\n" + "=" * 60)
     print("🎉 所有测试完成")

@@ -139,6 +139,24 @@ class CardTab(QWidget):
         av.addWidget(self._anomaly_table)
         self._sub_tabs.addTab(anomaly_page, "⚠ 异常时序")
 
+        # ── 子 Tab 7: 资产线索 (D5) ──
+        asset_page = QWidget()
+        asv = QVBoxLayout(asset_page)
+        asv.setContentsMargins(0, 0, 0, 0)
+        self._asset_info = QLabel()
+        self._asset_info.setStyleSheet("font-size:12px; padding:4px;")
+        self._asset_info.setWordWrap(True)
+        asv.addWidget(self._asset_info)
+        self._asset_table = QTableWidget()
+        self._asset_table.setAlternatingRowColors(True)
+        self._asset_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._asset_table.setColumnCount(6)
+        self._asset_table.setHorizontalHeaderLabels(
+            ["资产", "线索类别", "置信度", "命中关键词", "日期", "交易对手/摘要"])
+        self._asset_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        asv.addWidget(self._asset_table)
+        self._sub_tabs.addTab(asset_page, "🏠 资产线索")
+
     def load(self, report: CardReport):
         """加载单卡报告"""
         self._steps.setText("\n".join(report.steps))
@@ -148,6 +166,7 @@ class CardTab(QWidget):
         self._build_tenure_table(report)
         self._build_nominee_table(report)
         self._build_anomaly_table(report)
+        self._build_asset_table(report)
 
     # ── 统计明细 ──────────────────────────────────────
 
@@ -381,3 +400,44 @@ class CardTab(QWidget):
                     from PySide6.QtGui import QColor
                     item.setBackground(QColor("#FFE0E0"))
                 self._anomaly_table.setItem(i, j, item)
+
+    # ── 资产线索 (D5) ──────────────────────────────────
+
+    def _build_asset_table(self, r: CardReport):
+        clues = r.asset_clues
+        if not clues:
+            self._asset_info.setText(
+                "未检出房产/车辆资产线索。\n"
+                "D5 自动识别：物业/水电燃气/房产交易/契税、4S店/车险/违章 等。")
+            self._asset_table.setRowCount(0)
+            return
+
+        prop = sum(1 for c in clues if c["asset"] == "房产")
+        veh = sum(1 for c in clues if c["asset"] == "车辆")
+        high = sum(1 for c in clues if c["confidence"] == "高")
+        self._asset_info.setText(
+            f"房产线索 {prop} 条 | 车辆线索 {veh} 条 | 高置信度 {high} 条"
+            f"（🟡 中置信度需人工复核）")
+
+        # 高置信度排前
+        ordered = sorted(clues, key=lambda c: c["confidence"] != "高")
+        self._asset_table.setRowCount(len(ordered))
+        for i, c in enumerate(ordered):
+            tx = c["tx"]
+            conf = ("🔴 高" if c["confidence"] == "高" else "🟡 中")
+            vals = [
+                c["asset"], c["category"], conf, c["keyword"],
+                tx.date.strftime("%Y-%m-%d"),
+                (tx.counterparty or tx.raw_type or "")[:30],
+            ]
+            for j, v in enumerate(vals):
+                item = QTableWidgetItem(str(v))
+                if j == 5:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignLeft
+                                          | Qt.AlignmentFlag.AlignVCenter)
+                else:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if c["confidence"] == "高":
+                    from PySide6.QtGui import QColor
+                    item.setBackground(QColor("#E0F0E0"))
+                self._asset_table.setItem(i, j, item)

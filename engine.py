@@ -145,6 +145,10 @@ class CardReport:
     key_date_hits: dict = field(default_factory=dict)
     # {label: {date, before, after, window_days, txns}}
 
+    # ── 资产线索识别 (D5) ──
+    asset_clues: list = field(default_factory=list)
+    # [{category, asset, confidence, keyword, tx}]
+
     # ── 资金量分析（最小值法）──
     total_income: float = 0.0          # 入账合计
     total_expense: float = 0.0         # 出账合计
@@ -190,10 +194,20 @@ class SuspectReport:
     max_suspicion_label: str = ""
     max_nominee: float = 0.0
     max_nominee_label: str = ""
+    # D5 资产线索（合并名下各卡）
+    asset_clues: list = field(default_factory=list)
 
     @property
     def card_count(self) -> int:
         return len(self.cards)
+
+    @property
+    def property_clue_count(self) -> int:
+        return sum(1 for c in self.asset_clues if c["asset"] == "房产")
+
+    @property
+    def vehicle_clue_count(self) -> int:
+        return sum(1 for c in self.asset_clues if c["asset"] == "车辆")
 
 
 @dataclass
@@ -582,6 +596,121 @@ class ConsumptionClassifier:
 
 
 # ═══════════════════════════════════════════════════════════
+# 资产线索识别 (D5)
+# ═══════════════════════════════════════════════════════════
+
+class AssetClueDetector:
+    """资产线索识别 (D5)：从消费/缴费记录反推房产、车辆线索
+
+    CRITICAL: 修改规则库前必读 docs/DESIGN_DECISIONS.md#资产线索识别d5
+      - 三层关键词：强特征(高置信度) / 弱特征(需复核) / 排除词(否决弱层)
+      - 绝不用单字关键词（"水"/"电" 会误伤海量无关交易），只用 2+ 字具体短语
+      - 排除词只压制弱层，不压制强层（强层短语本身已足够具体）
+      - 匹配范围：交易对手 + 备注 + 交易摘要 拼接
+    """
+
+    # 资产线索规则库。category → {asset, strong, weak, exclude}
+    RULES = {
+        "房产-物业": {
+            # "物业" 二字在银行流水语境中专指物业管理，覆盖"物业费"缴费动作
+            # 和"XX物业管理公司"实体名两种形式
+            "asset": "房产",
+            "strong": ["物业"],
+            "weak": [], "exclude": [],
+        },
+        "房产-供暖费": {
+            "asset": "房产",
+            "strong": ["供热费", "采暖费", "取暖费", "暖气费", "热力公司", "热力集团"],
+            "weak": [], "exclude": [],
+        },
+        "房产-水费": {
+            "asset": "房产",
+            "strong": ["水费", "自来水", "供水公司", "水务集团", "水务公司", "水务有限"],
+            "weak": [],
+            "exclude": ["水产", "水利", "矿泉水", "排水", "水电站", "饮用水", "水利水电"],
+        },
+        "房产-电费": {
+            "asset": "房产",
+            "strong": ["电费", "水电费", "水电气费", "供电局", "供电公司",
+                       "电力公司", "国家电网", "南方电网", "电力有限"],
+            "weak": [],
+            "exclude": ["电器", "电子", "电信", "电脑", "充电", "家电", "电影", "电动车"],
+        },
+        "房产-燃气费": {
+            "asset": "房产",
+            "strong": ["燃气费", "天然气费", "燃气公司", "天然气公司", "煤气费", "燃气集团"],
+            "weak": [], "exclude": [],
+        },
+        "房产-交易": {
+            "asset": "房产",
+            "strong": ["房地产开发", "房产交易", "二手房", "不动产登记", "不动产交易",
+                       "购房款", "首付款", "房屋买卖", "资金监管", "房产中介",
+                       "房屋销售", "链家", "贝壳", "我爱我家", "中原地产"],
+            "weak": ["房款"], "exclude": [],
+        },
+        "房产-税费": {
+            "asset": "房产",
+            "strong": ["契税", "土地增值税", "房产税", "不动产权"],
+            "weak": ["国税", "地税", "税务局"], "exclude": [],
+        },
+        "车辆-购置": {
+            "asset": "车辆",
+            "strong": ["车辆购置税", "购置税", "4s店", "汽车销售", "汽车贸易",
+                       "机动车", "购车款", "汽车有限公司", "汽车服务有限"],
+            "weak": [], "exclude": [],
+        },
+        "车辆-保险": {
+            "asset": "车辆",
+            "strong": ["车险", "交强险", "商业车险", "机动车保险"],
+            "weak": ["保险"], "exclude": [],
+        },
+        "车辆-使用": {
+            "asset": "车辆",
+            "strong": ["违章", "交通违法", "车辆违法", "停车费", "车位费", "etc",
+                       "高速通行", "汽车维修", "汽车保养", "车辆年检"],
+            "weak": ["停车", "罚款"], "exclude": [],
+        },
+    }
+
+    @classmethod
+    def classify_transaction(cls, tx) -> list:
+        """对一笔交易识别资产线索。
+
+        返回 [{category, asset, confidence, keyword}, ...]，无命中返回 []。
+        confidence: '高'(强特征) / '中'(弱特征，需人工复核)。
+        """
+        text = (f"{tx.counterparty or ''} {tx.remark or ''} "
+                f"{tx.raw_type or ''}").lower()
+        results = []
+        for category, rule in cls.RULES.items():
+            # 强特征：命中即高置信度（排除词不压制强层）
+            strong_hit = next((kw for kw in rule["strong"]
+                               if kw.lower() in text), None)
+            if strong_hit:
+                results.append({"category": category, "asset": rule["asset"],
+                                "confidence": "高", "keyword": strong_hit})
+                continue
+            # 弱特征：先查排除词，命中排除词则否决
+            if any(ex.lower() in text for ex in rule["exclude"]):
+                continue
+            weak_hit = next((kw for kw in rule["weak"]
+                             if kw.lower() in text), None)
+            if weak_hit:
+                results.append({"category": category, "asset": rule["asset"],
+                                "confidence": "中", "keyword": weak_hit})
+        return results
+
+    @classmethod
+    def analyze(cls, transactions: list) -> list:
+        """扫描全部交易，返回资产线索列表 [{category, asset, confidence, keyword, tx}]"""
+        clues = []
+        for t in transactions:
+            for hit in cls.classify_transaction(t):
+                clues.append({**hit, "tx": t})
+        return clues
+
+
+# ═══════════════════════════════════════════════════════════
 # 现金存取链配对
 # ═══════════════════════════════════════════════════════════
 
@@ -966,7 +1095,29 @@ class CardAnalyzer:
         if key_dates:
             self._analyze_key_dates(report, transactions, key_dates)
 
+        # === Step 14: 资产线索识别 (D5) ===
+        self._analyze_assets(report, transactions)
+
         return report
+
+    def _analyze_assets(self, report: CardReport, transactions: list):
+        """D5 资产线索识别：从消费/缴费记录反推房产、车辆"""
+        if not transactions:
+            return
+        clues = AssetClueDetector.analyze(transactions)
+        report.asset_clues = clues
+        if clues:
+            prop = sum(1 for c in clues if c["asset"] == "房产")
+            veh = sum(1 for c in clues if c["asset"] == "车辆")
+            high = sum(1 for c in clues if c["confidence"] == "高")
+            report.log(f"\n--- 资产线索识别 (D5) ---")
+            report.log(f"  房产线索 {prop} 条，车辆线索 {veh} 条"
+                       f"（其中高置信度 {high} 条）")
+            for c in clues[:15]:
+                report.log(f"  [{c['confidence']}] {c['category']} "
+                           f"← 命中'{c['keyword']}' "
+                           f"({c['tx'].date.strftime('%Y-%m-%d')} "
+                           f"{c['tx'].counterparty or c['tx'].raw_type})")
 
     def _analyze_timeseries(self, report: CardReport, transactions: list):
         """D3 异常时序检测：拆分洗钱 / 批量整数 / 节假日突击
@@ -1694,6 +1845,11 @@ def aggregate_suspects(reports: list) -> List[SuspectReport]:
         top_susp = max(group, key=lambda r: r.suspicion_score)
         top_nom = max(group, key=lambda r: r.nominee_score)
 
+        # D5 合并名下各卡的资产线索
+        merged_clues = []
+        for r in group:
+            merged_clues.extend(r.asset_clues)
+
         suspects.append(SuspectReport(
             name=group[0].name,
             id_card=group[0].holder_id_card,
@@ -1709,6 +1865,7 @@ def aggregate_suspects(reports: list) -> List[SuspectReport]:
             max_suspicion_label=top_susp.suspicion_label,
             max_nominee=top_nom.nominee_score,
             max_nominee_label=top_nom.nominee_label,
+            asset_clues=merged_clues,
         ))
 
     # 多卡的排前面，再按合并资金量降序
