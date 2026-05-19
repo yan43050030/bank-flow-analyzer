@@ -32,10 +32,11 @@ class SuspectTab(QWidget):
         self._table.setAlternatingRowColors(True)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self._table.setColumnCount(9)
+        self._table.setColumnCount(11)
         self._table.setHorizontalHeaderLabels([
             "姓名", "身份证", "卡数", "卡号", "合并交易数",
-            "合并资金量", "卡间互转", "最高可疑度", "最高代持分"])
+            "合并资金量", "卡间互转", "最高可疑度", "最高代持分",
+            "🏠房产线索", "🚗车辆线索"])
         self._table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch)
         self._table.horizontalHeader().setSectionResizeMode(
@@ -66,6 +67,8 @@ class SuspectTab(QWidget):
                 f"{s.inter_card_transfer:,.0f}",
                 f"{s.max_suspicion:.0f} {s.max_suspicion_label}",
                 f"{s.max_nominee:.0f} {s.max_nominee_label}",
+                f"{s.property_clue_count} 条" if s.property_clue_count else "—",
+                f"{s.vehicle_clue_count} 条" if s.vehicle_clue_count else "—",
             ]
             for j, v in enumerate(vals):
                 item = QTableWidgetItem(v)
@@ -79,4 +82,9 @@ class SuspectTab(QWidget):
                 if j == 8 and ("高" in s.max_nominee_label
                                or "疑似" in s.max_nominee_label):
                     item.setBackground(QColor("#FFE0E0"))
+                # 有资产线索的格子浅绿
+                if j == 9 and s.property_clue_count:
+                    item.setBackground(QColor("#E0F0E0"))
+                if j == 10 and s.vehicle_clue_count:
+                    item.setBackground(QColor("#E0F0E0"))
                 self._table.setItem(i, j, item)

@@ -25,6 +25,7 @@
 | `_analyze_timeseries` / `_fixed_holiday` / `detect_synchronized_inflow` | `docs/DESIGN_DECISIONS.md#异常时序检测d3` |
 | `_analyze_key_dates` | `docs/DESIGN_DECISIONS.md#关键时间点关联d4` |
 | `aggregate_suspects` / `SuspectReport` | `docs/DESIGN_DECISIONS.md#嫌疑人画像聚合d1` |
+| `AssetClueDetector` | `docs/DESIGN_DECISIONS.md#资产线索识别d5` |
 | `ConsumptionClassifier` | `docs/DESIGN_DECISIONS.md#消费分类` |
 | `CounterpartyAnalyzer` | `docs/DESIGN_DECISIONS.md#hhi-排除工资` |
 | `interop.py`（任何函数 / `SCHEMA_ID`） | `docs/INTEROP_SPEC.md` + `docs/DESIGN_DECISIONS.md#跨软件联动` |
@@ -48,7 +49,7 @@
 3. 看 `test_engine.py` 中相关测试场景，理解断言含义
 
 ### 改代码后
-1. **必须**跑 `python3 test_engine.py`——19 个测试全过才能提交
+1. **必须**跑 `python3 test_engine.py`——全部测试通过才能提交
 2. 如果改了算法逻辑，**必须**新增对应回归测试
 3. 修复 bug 后，把 bug 加入 [REGRESSION_GUARD.md](docs/REGRESSION_GUARD.md)，让下一个 LLM 知道
 
@@ -70,7 +71,7 @@
 ## 关键命令
 
 ```bash
-# 测试（必须 19/19 通过）
+# 测试（必须全部通过）
 python3 test_engine.py
 
 # 启动 UI（需要 PySide6）
