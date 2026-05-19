@@ -28,6 +28,8 @@ class LeftPanel(QWidget):
     # 跨软件联动 (G 组): 导入联动包 (路径) / 导出联动包
     interop_import_requested = Signal(str)
     interop_export_requested = Signal()
+    # 审计日志导出 (C3)
+    audit_export_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -65,6 +67,11 @@ class LeftPanel(QWidget):
         self.btn_interop_export.setEnabled(False)
         self.btn_interop_export.clicked.connect(self._on_interop_export)
         f.addWidget(self.btn_interop_export)
+        # C3 审计日志导出（始终可用，记录所有操作）
+        self.btn_audit_export = QPushButton("📋 导出操作日志 (审计)")
+        self.btn_audit_export.setToolTip("导出本工具的所有操作记录，作为办案程序合法性证据")
+        self.btn_audit_export.clicked.connect(lambda: self.audit_export_requested.emit())
+        f.addWidget(self.btn_audit_export)
         lv.addWidget(g1)
 
         # ── 字段映射 ──

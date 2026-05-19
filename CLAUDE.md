@@ -29,6 +29,7 @@
 | `ConsumptionClassifier` | `docs/DESIGN_DECISIONS.md#消费分类` |
 | `CounterpartyAnalyzer` | `docs/DESIGN_DECISIONS.md#hhi-排除工资` |
 | `interop.py`（任何函数 / `SCHEMA_ID`） | `docs/INTEROP_SPEC.md` + `docs/DESIGN_DECISIONS.md#跨软件联动` |
+| `audit.AuditLogger` | `docs/DESIGN_DECISIONS.md#审计日志c3` |
 
 ## 八条铁律（违反等于回归）
 
