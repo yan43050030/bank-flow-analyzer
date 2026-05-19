@@ -820,6 +820,54 @@ def test_scenario_34_interop_entity_idcard():
     print("✅ 测试34通过")
 
 
+def test_scenario_44_multibank_merge():
+    """B1: 多家银行流水合并分析 — 同一人不同银行的卡能聚合"""
+    print("\n" + "=" * 60)
+    print("测试44: 多银行流水合并（B1）")
+    print("=" * 60)
+
+    ID = "110101199001011234"
+    # 模拟两个银行文件分别加载的 Transaction（source 字段不同）
+    bank_a = [
+        Transaction(date=datetime(2024, 1, 1), card="工行卡6222",
+                    name="嫌疑人", raw_type="工资", amount=50000,
+                    counterparty="某某公司", holder_id_card=ID,
+                    source="工行流水.xlsx"),
+        Transaction(date=datetime(2024, 2, 1), card="工行卡6222",
+                    name="嫌疑人", raw_type="消费", amount=-2000,
+                    counterparty="美团", holder_id_card=ID,
+                    source="工行流水.xlsx"),
+    ]
+    bank_b = [
+        Transaction(date=datetime(2024, 1, 15), card="建行卡6217",
+                    name="嫌疑人", raw_type="转账", amount=30000,
+                    counterparty="某人", holder_id_card=ID,
+                    source="建行流水.csv"),
+        Transaction(date=datetime(2024, 3, 1), card="建行卡6217",
+                    name="嫌疑人", raw_type="消费", amount=-5000,
+                    counterparty="高端商场", holder_id_card=ID,
+                    source="建行流水.csv"),
+    ]
+    # 合并分析（模拟 B1 分析池）
+    result = analyze_bank_flow(bank_a + bank_b)
+
+    print(f"卡数: {len(result.reports)}  嫌疑人数: {len(result.suspects)}")
+    assert len(result.reports) == 2, "两张卡应各自分析"
+    assert len(result.suspects) == 1, "同身份证 → 聚合为 1 人（跨银行）"
+
+    s = result.suspects[0]
+    print(f"嫌疑人合并：{s.card_count} 张卡 {s.cards}, 交易 {s.total_records} 笔")
+    assert s.card_count == 2, "应跨银行聚合 2 张卡"
+    assert s.total_records == 4, "应合并 4 笔交易"
+
+    # 验证 source 字段保留到 CardReport.all_transactions
+    sources = {t.source for r in result.reports for t in r.all_transactions}
+    print(f"source 字段: {sorted(sources)}")
+    assert sources == {"工行流水.xlsx", "建行流水.csv"}, \
+        f"source 字段应在分析后保留: {sources}"
+    print("✅ 测试44通过")
+
+
 def test_scenario_41_audit_log_append_only():
     """C3: 审计日志 append-only，多条记录顺序保留"""
     print("\n" + "=" * 60)
@@ -1214,5 +1262,6 @@ if __name__ == "__main__":
     test_scenario_41_audit_log_append_only()
     test_scenario_42_audit_log_export()
     test_scenario_43_audit_log_no_raw_data()
+    test_scenario_44_multibank_merge()
     print("\n" + "=" * 60)
     print("🎉 所有测试完成")

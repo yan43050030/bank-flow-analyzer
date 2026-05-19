@@ -51,6 +51,9 @@ class MainWindow(QMainWindow):
         self._has_interop_tab: bool = False
         self._tab_kinds: list = []        # 与 _tabs 一一对应的种类标签
         self._audit = AuditLogger()       # C3 审计日志（程序合法性证据）
+        # B1 多银行合并：分析池累积多次导入的交易
+        self._pool_txs: List[Transaction] = []
+        self._pool_sources: list = []     # [(file_basename, txn_count), ...]
         self.tm = ThemeManager()
 
         self.setWindowTitle(f"{APP_NAME} v{__version__}")
@@ -76,6 +79,8 @@ class MainWindow(QMainWindow):
         self._left.interop_import_requested.connect(self._on_interop_import)
         self._left.interop_export_requested.connect(self._on_interop_export)
         self._left.audit_export_requested.connect(self._on_export_audit)
+        self._left.add_to_pool_requested.connect(self._on_add_to_pool)
+        self._left.clear_pool_requested.connect(self._on_clear_pool)
         root.addWidget(self._left)
 
         # 右侧 — 包裹在 ScrollArea 中支持横向滚动
@@ -159,12 +164,13 @@ class MainWindow(QMainWindow):
                         file=os.path.basename(path), rows=len(df),
                         columns=len(df.columns))
 
-    def _on_run_requested(self, mappings: dict, params: dict, config: dict):
-        if self._df is None:
-            return
-        df = self._df.copy()
+    def _build_transactions_from_df(self, df, mappings: dict, params: dict,
+                                    source: str = "") -> List[Transaction]:
+        """从 DataFrame + 字段映射构建 Transaction 列表。
 
-        # 构建 Transaction 列表
+        被 _on_run_requested 和 _on_add_to_pool 共用，避免逻辑漂移。
+        source: 标记交易来源（文件名），便于 B1 多银行合并的追溯。
+        """
         transactions: List[Transaction] = []
         for idx, (_, row) in enumerate(df.iterrows()):
             d = parse_date(row[mappings["date"]])
@@ -178,12 +184,12 @@ class MainWindow(QMainWindow):
             amt = abs(amt) if direction == 1 else (-abs(amt) if direction == -1 else amt)
             if params.get("skip_small") and abs(amt) < 100:
                 continue
+
             def col(key):
-                """读取可选映射列的值，未映射返回空串"""
                 c = mappings.get(key, "")
                 return str(row.get(c, "")).strip() if c else ""
 
-            tx = Transaction(
+            transactions.append(Transaction(
                 date=d,
                 card=str(row.get(mappings["card"], "")).strip(),
                 name=str(row.get(mappings.get("name", ""), "")).strip(),
@@ -196,8 +202,20 @@ class MainWindow(QMainWindow):
                 counterparty_phone=col("cp_phone"),
                 counterparty_id_card=col("cp_id"),
                 holder_id_card=col("holder_id"),
-            )
-            transactions.append(tx)
+                source=source,
+            ))
+        return transactions
+
+    def _on_run_requested(self, mappings: dict, params: dict, config: dict):
+        if self._df is None and not self._pool_txs:
+            return
+
+        # B1 多银行合并：池中累积的 + 当前导入的（若有），合并后一起分析
+        transactions: List[Transaction] = list(self._pool_txs)
+        if self._df is not None:
+            transactions.extend(self._build_transactions_from_df(
+                self._df, mappings, params,
+                source=os.path.basename(self._current_file)))
 
         if not transactions:
             QMessageBox.information(self, "提示", "没有有效的交易数据")
@@ -242,7 +260,8 @@ class MainWindow(QMainWindow):
             f"统计完成 | {total}张卡{dup_note} {total_tx}笔交易{sync_note}")
         self._audit.log(
             "analyze",
-            file=os.path.basename(self._current_file),
+            current_file=os.path.basename(self._current_file or ""),
+            pool_files=[s[0] for s in self._pool_sources],
             cards=total, unique_cards=uniq, txns=total_tx,
             suspects=len(self._result.suspects),
             sync_inflow_groups=sync_n,
@@ -523,6 +542,59 @@ class MainWindow(QMainWindow):
                             entities=len(pkg.entities))
         except Exception as e:
             QMessageBox.critical(self, "联动包导出失败", str(e))
+
+    # ═══ 多银行合并 (B1) ═══════════════════════════════
+
+    def _on_add_to_pool(self):
+        """把当前导入的流水加入分析池（多次累加后一起分析）"""
+        if self._df is None:
+            QMessageBox.information(self, "提示", "请先导入流水文件")
+            return
+        # 从左侧面板取当前映射（不通过 run signal，避免触发分析）
+        mappings = {key: cmb.currentText()
+                    for key, cmb in self._left._mapping_cmbs.items()}
+        required = ["date", "card", "type", "amount"]
+        if not all(mappings[k] for k in required):
+            QMessageBox.information(self, "提示",
+                "至少需要选择：日期列、卡号列、交易摘要列、金额列")
+            return
+        params = {"skip_small": self._left.chk_small.isChecked()}
+        src = os.path.basename(self._current_file)
+        txs = self._build_transactions_from_df(
+            self._df, mappings, params, source=src)
+        if not txs:
+            QMessageBox.information(self, "提示", "本文件无有效交易，未加入池")
+            return
+        self._pool_txs.extend(txs)
+        self._pool_sources.append((src, len(txs)))
+        self._status.showMessage(
+            f"已加入池: {src} ({len(txs)} 笔)  "
+            f"池中共 {len(self._pool_sources)} 个文件 / {len(self._pool_txs)} 笔")
+        self._audit.log("pool_add", source=src, txns=len(txs),
+                        pool_files=len(self._pool_sources),
+                        pool_total=len(self._pool_txs))
+        self._refresh_pool_label()
+        # 清掉当前 df，准备导入下一份
+        self._df = None
+        self._current_file = ""
+        self._left._df = None
+        self._left.lbl_file.setText(
+            f"已加入池：{src}\n点击「导入银行流水」加入下一份")
+        self._left.btn_add_pool.setEnabled(False)
+
+    def _on_clear_pool(self):
+        """清空分析池"""
+        cleared = len(self._pool_txs)
+        self._pool_txs = []
+        self._pool_sources = []
+        self._refresh_pool_label()
+        self._status.showMessage(f"分析池已清空（清除 {cleared} 笔交易）")
+        self._audit.log("pool_clear", cleared=cleared)
+
+    def _refresh_pool_label(self):
+        names = [s[0] for s in self._pool_sources]
+        self._left.set_pool_status(
+            len(self._pool_sources), len(self._pool_txs), names)
 
     # ═══ 审计日志 (C3) ═══════════════════════════════════
 

@@ -37,6 +37,9 @@ class Transaction:
     # 持卡人身份证 (v4.2 D1)：用于把同一人名下多张卡聚合成嫌疑人画像
     holder_id_card: str = ""
 
+    # 数据来源 (v4.6 B1)：标识该交易来自哪个文件/银行，便于跨银行合并追溯
+    source: str = ""
+
     # 分类后会赋值
     category: str = ""       # cash_in, cash_out, finance_buy, finance_sell, consume, transfer_in, transfer_out, other
 
