@@ -191,7 +191,26 @@ def build_export_package(reports: list, case_name: str = "",
     pkg.entities = _bank_entities(pkg.entities, reports)
     if not isinstance(pkg.analysis_summary, dict):
         pkg.analysis_summary = {}
-    pkg.analysis_summary["银行流水分析"] = _bank_summary(reports)
+    summary = _bank_summary(reports)
+
+    # G3 综合关联评分：若交换包已含通话数据，把核心关系写进摘要
+    if pkg.call_events:
+        rels = analyze_relationship_strength(
+            pkg.transaction_events, pkg.call_events, pkg.sms_events)
+        core = [r for r in rels if r["is_core"]]
+        summary["综合关联评分"] = {
+            "核心关系数": len(core),
+            "核心关系": [
+                {"手机号": r["phone"],
+                 "对手": r["counterparty_names"],
+                 "综合分": r["total_score"],
+                 "资金分": r["fund_score"],
+                 "通讯分": r["comm_score"]}
+                for r in core[:20]
+            ],
+        }
+
+    pkg.analysis_summary["银行流水分析"] = summary
     return pkg
 
 
@@ -282,4 +301,107 @@ def analyze_transfer_call_correlation(
 
     results.sort(key=lambda r: (r["call_count"], r["total_duration_sec"]),
                  reverse=True)
+    return results
+
+
+# ═══════════════════════════════════════════════════════════
+# 综合关联评分 (G3)
+# ═══════════════════════════════════════════════════════════
+
+def analyze_relationship_strength(
+        transaction_events: list,
+        call_events: list,
+        sms_events: list = None) -> list:
+    """G3 综合关联评分：资金往来 + 通讯往来 → 核心关系识别。
+
+    CRITICAL: 评分常量是经验启发值（非法定/非精算），可调；
+    详见 docs/DESIGN_DECISIONS.md#综合关联评分g3。
+
+    按手机号聚合：交易的 counterparty_phone ↔ 通话/短信的 other。
+    "核心关系" = 资金维度和通讯维度都密切 —— 受贿/共谋核心圈的最强信号
+    （只资金密切可能是正常业务往来，只通讯密切可能是普通社交，二者叠加
+    才是值得重点核查的关系）。
+
+    返回（核心关系优先、再按综合分降序）:
+      [{phone, counterparty_names, tx_count, tx_amount, net_flow,
+        call_count, call_duration_sec, sms_count,
+        fund_score, comm_score, total_score, is_core, label}, ...]
+    """
+    sms_events = sms_events or []
+
+    # 按手机号聚合资金往来
+    fund = {}
+    for tx in transaction_events:
+        phone = (tx.get("counterparty_phone") or "").strip()
+        if not phone:
+            continue
+        rec = fund.setdefault(phone, {"count": 0, "amount": 0.0,
+                                      "net": 0.0, "names": set()})
+        amt = _to_float(tx.get("amount"))
+        rec["count"] += 1
+        rec["amount"] += abs(amt)
+        rec["net"] += amt
+        name = (tx.get("counterparty") or "").strip()
+        if name:
+            rec["names"].add(name)
+
+    # 按手机号聚合通讯往来（话单的 other = 对方）
+    comm = {}
+    for c in call_events:
+        phone = (c.get("other") or "").strip()
+        if not phone:
+            continue
+        rec = comm.setdefault(phone, {"calls": 0, "duration": 0, "sms": 0})
+        rec["calls"] += 1
+        rec["duration"] += _to_int(c.get("duration_sec"))
+    for s in sms_events:
+        phone = (s.get("other") or "").strip()
+        if not phone:
+            continue
+        rec = comm.setdefault(phone, {"calls": 0, "duration": 0, "sms": 0})
+        rec["sms"] += 1
+
+    results = []
+    for phone in set(fund) | set(comm):
+        f = fund.get(phone, {"count": 0, "amount": 0.0, "net": 0.0, "names": set()})
+        m = comm.get(phone, {"calls": 0, "duration": 0, "sms": 0})
+
+        # 资金分量 (0-50)：笔数 0-25 + 金额 0-25
+        fund_score = round(
+            min(25.0, f["count"] * 5.0)
+            + min(25.0, f["amount"] / 200000.0 * 25.0), 1)
+
+        # 通讯分量 (0-50)：通话次数 0-30 + 时长 0-15 + 短信 0-5
+        comm_score = round(
+            min(30.0, m["calls"] * 3.0)
+            + min(15.0, m["duration"] / 3600.0 * 15.0)
+            + min(5.0, m["sms"] * 1.0), 1)
+
+        total = round(fund_score + comm_score, 1)
+        # 核心关系：两个维度都达到"有意义"门槛（各 ≥15）
+        is_core = fund_score >= 15.0 and comm_score >= 15.0
+        if is_core:
+            label = "🔴 核心关系"
+        elif total >= 50.0:
+            label = "🟡 密切"
+        else:
+            label = "🟢 一般"
+
+        results.append({
+            "phone": phone,
+            "counterparty_names": sorted(f["names"]),
+            "tx_count": f["count"],
+            "tx_amount": round(f["amount"], 2),
+            "net_flow": round(f["net"], 2),
+            "call_count": m["calls"],
+            "call_duration_sec": m["duration"],
+            "sms_count": m["sms"],
+            "fund_score": fund_score,
+            "comm_score": comm_score,
+            "total_score": total,
+            "is_core": is_core,
+            "label": label,
+        })
+
+    results.sort(key=lambda r: (r["is_core"], r["total_score"]), reverse=True)
     return results

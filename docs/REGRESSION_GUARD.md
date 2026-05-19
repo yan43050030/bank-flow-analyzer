@@ -20,6 +20,7 @@
 | `_analyze_key_dates` | D4 关键时间点关联 |
 | `aggregate_suspects` | D1——合并资金量必须剔除卡间互转，否则重复计 |
 | `AssetClueDetector.RULES` | D5——只用 2+ 字关键词，排除词只压制弱层 |
+| `analyze_relationship_strength` | G3——核心关系要求资金+通讯双维度都 ≥15 |
 | `interop.py` 任何函数 / `SCHEMA_ID` | 跨仓库契约——见 `docs/INTEROP_SPEC.md`，不能单方面改 |
 | `test_engine.py` 中任何 assert | "测试断言不能放宽"——v2.5 教训（详见 Bug 3） |
 

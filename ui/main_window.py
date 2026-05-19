@@ -21,7 +21,7 @@ from engine import (
 from interop import (
     InteropError, load_interop_package, save_interop_package,
     build_export_package, reports_to_transaction_events,
-    analyze_transfer_call_correlation,
+    analyze_transfer_call_correlation, analyze_relationship_strength,
 )
 from ui.theme_manager import ThemeManager
 from ui.parsers import parse_amount, parse_date, resolve_direction
@@ -44,7 +44,8 @@ class MainWindow(QMainWindow):
         self._card_tabs: list[CardTab] = []
         # 跨软件联动 (G 组)
         self._interop_pkg = None          # 从话单工具导入的交换包
-        self._correlations: list = []     # 转账-通话交叉分析结果
+        self._correlations: list = []     # 转账-通话交叉分析结果 (G2)
+        self._relationships: list = []    # 综合关联评分结果 (G3)
         self._last_large_threshold: float = 50000.0
         self._has_interop_tab: bool = False
         self._tab_kinds: list = []        # 与 _tabs 一一对应的种类标签
@@ -280,7 +281,7 @@ class MainWindow(QMainWindow):
             self._interop_pkg is not None and self._interop_pkg.call_events)
         if self._has_interop_tab:
             interop_tab = InteropTab()
-            interop_tab.load(self._correlations)
+            interop_tab.load(self._correlations, self._relationships)
             self._tabs.addTab(interop_tab, "🔗 通联交叉")
             self._tab_kinds.append("interop")
 
@@ -338,10 +339,12 @@ class MainWindow(QMainWindow):
             ])
         elif kind == "interop":
             n = len(self._correlations)
+            core = sum(1 for r in self._relationships if r["is_core"])
             self._fund_header.set_fund_text(
-                f"🔗 通联交叉分析 — {n} 笔大额转账在转账前有通话往来")
+                f"🔗 通联交叉 — {n} 笔转账前有通话 | ⭐ {core} 个核心关系")
             self._fund_header.set_cards([
                 ("🔗 关联转账数", f"{n}"),
+                ("⭐ 核心关系数", f"{core}"),
                 ("📞 已导入通话", f"{len(self._interop_pkg.call_events)}"),
             ])
         else:
@@ -430,8 +433,9 @@ class MainWindow(QMainWindow):
     # ═══ 跨软件联动 (G 组) ══════════════════════════════
 
     def _run_correlation(self):
-        """对当前分析结果做转账-通话交叉分析（需已导入话单联动包）"""
+        """对当前分析结果做 G2 转账-通话交叉 + G3 综合关联评分（需已导入话单包）"""
         self._correlations = []
+        self._relationships = []
         if (self._interop_pkg is None
                 or not self._interop_pkg.call_events
                 or self._result is None):
@@ -441,6 +445,9 @@ class MainWindow(QMainWindow):
             tx_events, self._interop_pkg.call_events,
             window_hours=24.0,
             large_threshold=self._last_large_threshold)
+        self._relationships = analyze_relationship_strength(
+            tx_events, self._interop_pkg.call_events,
+            self._interop_pkg.sms_events)
 
     def _on_interop_import(self, path: str):
         """导入话单工具导出的 case-interop-v1 联动包"""
