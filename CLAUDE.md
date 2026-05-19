@@ -60,6 +60,11 @@
 4. **必须**更新 `CHANGELOG.md`——历史断层等于失忆
 5. 不要在没人要求的情况下创建文档文件（README/MD），但 CHANGELOG / DESIGN_DECISIONS / REGRESSION_GUARD 必须维护
 
+> **自动发版**：`version.py` 的版本号是唯一真相来源。代码合并到 `main` 后，
+> `.github/workflows/build.yml` 会自动读版本号——若该版本 tag 不存在，就构建
+> Windows/macOS 包并创建 Release（tag 自动建）。**不需要手动 `git tag`**。
+> 所以"升版本号 + 更新 CHANGELOG"两步做对，发版就是自动的。
+
 ## 不要做
 
 - ❌ "顺手"重构通过测试的代码——你能跑通测试不代表你的实现等价（v2.5 重写整数偏好就是这种翻车）

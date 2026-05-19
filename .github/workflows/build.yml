@@ -1,14 +1,49 @@
 name: Build and Release
 
+# 推送到 main 后自动构建；若 version.py 的版本号对应的 tag 尚不存在，
+# 则自动创建 Release（softprops/action-gh-release 会自动建 tag）。
+# 普通提交（版本号未变）不会重复发版。
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: write          # 创建 Release / tag 必须
+
 jobs:
+  # ── 版本检查：决定本次是否要发版 ──────────────────
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      should_release: ${{ steps.check.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 读取版本号 (version.py 是唯一真相来源)
+        id: ver
+        run: |
+          VERSION=$(grep -oP '__version__\s*=\s*"\K[^"]+' version.py)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "检测到版本: $VERSION"
+
+      - name: 检查该版本 tag 是否已存在
+        id: check
+        run: |
+          if git ls-remote --exit-code --tags origin \
+               "refs/tags/v${{ steps.ver.outputs.version }}" >/dev/null 2>&1; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "tag v${{ steps.ver.outputs.version }} 已存在，跳过发版"
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "tag v${{ steps.ver.outputs.version }} 不存在，将发版"
+          fi
+
   # ── Windows 构建 ──────────────────────────────────
   build-windows:
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +75,8 @@ jobs:
 
   # ── macOS 构建 ────────────────────────────────────
   build-macos:
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -69,13 +106,11 @@ jobs:
           name: macos-build
           path: BankFlowAnalyzer-macos.dmg
 
-  # ── 发布 Release ─────────────────────────────────
+  # ── 发布 Release（自动建 tag）─────────────────────
   release:
-    needs: [build-windows, build-macos]
+    needs: [check, build-windows, build-macos]
+    if: needs.check.outputs.should_release == 'true'
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -89,30 +124,15 @@ jobs:
         with:
           name: macos-build
 
-      - name: Get version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+      - name: 从 CHANGELOG 提取本版本发布说明
+        run: awk '/^## \[/{c++} c==1' CHANGELOG.md > release_notes.md
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          name: ${{ steps.version.outputs.VERSION }}
-          body: |
-            银行流水资金统计工具 ${{ steps.version.outputs.VERSION }}
-
-            ### v2.1.0 更新内容
-            - PySide6 框架，模块化 UI 架构
-            - 多卡分页展示 + 汇总对比表
-            - 资金量分析：入/出校验 + 最小值法 + max(峰值,最小资金量)
-            - 余额校验精确到分
-            - 适配建设银行、黑龙江省农村信用社模板
-            - 多 Sheet 自动识别，借贷标志自动解析
-
-            详见 [CHANGELOG.md](./blob/main/CHANGELOG.md)
-
-            ### 下载
-            - **Windows**: `BankFlowAnalyzer-windows-x64.zip`
-            - **macOS**: `BankFlowAnalyzer-macos.dmg`
+          tag_name: v${{ needs.check.outputs.version }}   # tag 不存在会自动建
+          name: v${{ needs.check.outputs.version }}
+          body_path: release_notes.md
           files: |
             BankFlowAnalyzer-windows-x64.zip
             BankFlowAnalyzer-macos.dmg
