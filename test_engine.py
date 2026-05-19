@@ -15,7 +15,7 @@ from interop import (
     SCHEMA_ID, InteropPackage, InteropError,
     load_interop_package, save_interop_package,
     reports_to_transaction_events, build_export_package,
-    analyze_transfer_call_correlation,
+    analyze_transfer_call_correlation, analyze_relationship_strength,
 )
 
 
@@ -819,6 +819,77 @@ def test_scenario_34_interop_entity_idcard():
     print("✅ 测试34通过")
 
 
+def test_scenario_39_relationship_core():
+    """G3: 资金+通讯双密切 → 核心关系；只占一边 → 非核心"""
+    print("\n" + "=" * 60)
+    print("测试39: 综合关联评分 — 核心关系识别（G3）")
+    print("=" * 60)
+
+    # 李四：5 笔大额转账 + 8 通电话 → 资金+通讯双密切 → 核心
+    # 王五：只有 5 笔转账，无通话 → 只资金密切 → 非核心
+    # 赵六：只有 10 通电话，无转账 → 只通讯密切 → 非核心
+    tx_events = []
+    for i in range(5):
+        tx_events.append({"time": f"2024-0{i+1}-01T10:00:00", "amount": -60000,
+                          "counterparty": "李四", "counterparty_phone": "13900001111"})
+        tx_events.append({"time": f"2024-0{i+1}-02T10:00:00", "amount": -60000,
+                          "counterparty": "王五", "counterparty_phone": "13900002222"})
+    call_events = []
+    for i in range(8):
+        call_events.append({"time": f"2024-01-0{i+1}T09:00:00",
+                            "self": "138", "other": "13900001111",
+                            "duration_sec": 600})
+    for i in range(9):
+        call_events.append({"time": f"2024-02-0{i+1}T09:00:00",
+                            "self": "138", "other": "13900003333",
+                            "duration_sec": 600})
+
+    rels = analyze_relationship_strength(tx_events, call_events)
+    by_phone = {r["phone"]: r for r in rels}
+    for p, label in [("13900001111", "李四"), ("13900002222", "王五"),
+                     ("13900003333", "赵六")]:
+        r = by_phone.get(p)
+        print(f"  {label}({p}): 资金分{r['fund_score']:.0f} 通讯分{r['comm_score']:.0f}"
+              f" 综合{r['total_score']:.0f} {r['label']}")
+
+    assert by_phone["13900001111"]["is_core"], "李四资金+通讯双密切应为核心关系"
+    assert not by_phone["13900002222"]["is_core"], "王五只资金密切，不应为核心"
+    assert not by_phone["13900003333"]["is_core"], "赵六只通讯密切，不应为核心"
+    # 核心关系应排在最前
+    assert rels[0]["phone"] == "13900001111", "核心关系应排在最前"
+    print("✅ 测试39通过")
+
+
+def test_scenario_40_relationship_in_export():
+    """G3: 综合关联评分应写进导出联动包的 analysis_summary"""
+    print("\n" + "=" * 60)
+    print("测试40: G3 写入导出包摘要（G3×G1）")
+    print("=" * 60)
+
+    txs = []
+    for i in range(5):
+        txs.append(Transaction(
+            date=datetime(2024, i + 1, 1, 10, 0), card="6222", name="嫌疑人",
+            raw_type="转账", amount=-60000, counterparty="李四",
+            counterparty_phone="13900001111"))
+    r = analyze_bank_flow(txs).reports[0]
+
+    base = InteropPackage(
+        case_name="某案",
+        call_events=[{"time": f"2024-01-0{i+1}T09:00:00", "self": "138",
+                      "other": "13900001111", "duration_sec": 600}
+                     for i in range(8)],
+    )
+    pkg = build_export_package([r], case_name="某案", base_package=base)
+    summary = pkg.analysis_summary.get("银行流水分析", {})
+    g3 = summary.get("综合关联评分")
+    print(f"analysis_summary 含综合关联评分: {g3 is not None}")
+    print(f"  核心关系数: {g3.get('核心关系数') if g3 else 'N/A'}")
+    assert g3 is not None, "导出包摘要应含综合关联评分"
+    assert g3["核心关系数"] >= 1, f"应识别出 ≥1 个核心关系: {g3['核心关系数']}"
+    print("✅ 测试40通过")
+
+
 def test_scenario_30_suspect_aggregation():
     """D1: 同一身份证名下多张卡聚合成一个嫌疑人"""
     print("\n" + "=" * 60)
@@ -1045,5 +1116,7 @@ if __name__ == "__main__":
     test_scenario_36_asset_clue_vehicle()
     test_scenario_37_asset_clue_exclusion()
     test_scenario_38_asset_clue_aggregation()
+    test_scenario_39_relationship_core()
+    test_scenario_40_relationship_in_export()
     print("\n" + "=" * 60)
     print("🎉 所有测试完成")
