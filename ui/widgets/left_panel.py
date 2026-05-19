@@ -30,6 +30,9 @@ class LeftPanel(QWidget):
     interop_export_requested = Signal()
     # 审计日志导出 (C3)
     audit_export_requested = Signal()
+    # 多银行合并 (B1): 加入分析池 / 清空池
+    add_to_pool_requested = Signal()
+    clear_pool_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -52,6 +55,21 @@ class LeftPanel(QWidget):
         self.lbl_file.setWordWrap(True)
         self.lbl_file.setStyleSheet("font-size:11px;")
         f.addWidget(self.lbl_file)
+        # B1 多银行合并：累加到分析池
+        h_pool = QHBoxLayout()
+        self.btn_add_pool = QPushButton("📥 加入分析池")
+        self.btn_add_pool.setToolTip("把当前导入的流水加入分析池，再导入下一份；多家银行合并分析")
+        self.btn_add_pool.setEnabled(False)
+        self.btn_add_pool.clicked.connect(lambda: self.add_to_pool_requested.emit())
+        h_pool.addWidget(self.btn_add_pool)
+        self.btn_clear_pool = QPushButton("🗑 清空池")
+        self.btn_clear_pool.setEnabled(False)
+        self.btn_clear_pool.clicked.connect(lambda: self.clear_pool_requested.emit())
+        h_pool.addWidget(self.btn_clear_pool)
+        f.addLayout(h_pool)
+        self.lbl_pool = QLabel("分析池: 空")
+        self.lbl_pool.setStyleSheet("font-size:11px; color:#666;")
+        f.addWidget(self.lbl_pool)
         self.btn_export = QPushButton("💾 导出结果 (xlsx)")
         self.btn_export.setEnabled(False)
         f.addWidget(self.btn_export)
@@ -179,6 +197,7 @@ class LeftPanel(QWidget):
             f"{os.path.basename(path)}\n{len(self._df)} 行 × {len(self._df.columns)} 列")
         self._auto_map(self._df)
         self.btn_run.setEnabled(True)
+        self.btn_add_pool.setEnabled(True)
         self.data_loaded.emit(self._df, path)
 
     def _auto_map(self, df):
@@ -247,6 +266,20 @@ class LeftPanel(QWidget):
 
     def _on_export_report(self):
         self.report_requested.emit()
+
+    # ── 多银行合并 (B1) ──────────────────────────────
+    def set_pool_status(self, file_count: int, txn_count: int, files: list = None):
+        """主窗口通知池状态变化"""
+        if file_count == 0:
+            self.lbl_pool.setText("分析池: 空")
+        else:
+            names = files or []
+            preview = ", ".join(os.path.basename(n) for n in names[:3])
+            if len(names) > 3:
+                preview += f"... ({len(names)}个)"
+            self.lbl_pool.setText(
+                f"分析池: {file_count} 个文件, {txn_count:,} 笔  [{preview}]")
+        self.btn_clear_pool.setEnabled(file_count > 0)
 
     # ── 跨软件联动 (G 组) ─────────────────────────────
     def _on_interop_import(self):
