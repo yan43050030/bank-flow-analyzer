@@ -43,9 +43,25 @@ jobs:
             echo "tag v${{ steps.ver.outputs.version }} 不存在，将发版"
           fi
 
+  # ── 创建草稿 Release（先于构建执行，避免竞态）────
+  create-release:
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create draft Release
+        run: |
+          VERSION="v${{ needs.check.outputs.version }}"
+          # 仅创建空的 draft Release（不含文件），确保 tag 先就位
+          gh release create "$VERSION" --draft --notes "" --target "$GITHUB_SHA" || \
+            echo "Release 已存在，直接复用"
+          echo "draft Release $VERSION 已就绪"
+
   # ── Windows 构建 ──────────────────────────────────
   build-windows:
-    needs: check
+    needs: create-release
     if: needs.check.outputs.should_release == 'true'
     runs-on: windows-latest
     steps:
@@ -70,19 +86,17 @@ jobs:
         run: |
           Compress-Archive -Path "dist/BankFlowAnalyzer/*" -DestinationPath BankFlowAnalyzer-windows-x64.zip
 
-      # 直接上传到 Release（跳过 upload-artifact，避免配额限制）
+      # 直接上传到已存在的 draft Release（跳过 upload-artifact，避免配额限制）
       - name: Upload to Release
         shell: bash
         run: |
-          FILE="BankFlowAnalyzer-windows-x64.zip"
           VERSION="v${{ needs.check.outputs.version }}"
-          # 先尝试创建 Release（draft），已存在则直接上传文件
-          gh release create "$VERSION" "$FILE" --draft --notes "" --target "$GITHUB_SHA" 2>/dev/null || \
-            gh release upload "$VERSION" "$FILE" --clobber
+          echo "上传 BankFlowAnalyzer-windows-x64.zip 到 $VERSION"
+          gh release upload "$VERSION" BankFlowAnalyzer-windows-x64.zip --clobber
 
   # ── macOS 构建 ────────────────────────────────────
   build-macos:
-    needs: check
+    needs: create-release
     if: needs.check.outputs.should_release == 'true'
     runs-on: macos-latest
     steps:
@@ -107,18 +121,16 @@ jobs:
         run: |
           hdiutil create -volname BankFlowAnalyzer -srcfolder "dist/BankFlowAnalyzer.app" -ov -format UDZO BankFlowAnalyzer-macos.dmg
 
-      # 直接上传到 Release（跳过 upload-artifact，避免配额限制）
+      # 直接上传到已存在的 draft Release
       - name: Upload to Release
         run: |
-          FILE="BankFlowAnalyzer-macos.dmg"
           VERSION="v${{ needs.check.outputs.version }}"
-          # 先尝试创建 Release（draft），已存在则直接上传文件
-          gh release create "$VERSION" "$FILE" --draft --notes "" --target "$GITHUB_SHA" 2>/dev/null || \
-            gh release upload "$VERSION" "$FILE" --clobber
+          echo "上传 BankFlowAnalyzer-macos.dmg 到 $VERSION"
+          gh release upload "$VERSION" BankFlowAnalyzer-macos.dmg --clobber
 
   # ── 发布 Release（从 draft 转为正式，写入发布说明）──
   release:
-    needs: [check, build-windows, build-macos]
+    needs: [create-release, build-windows, build-macos]
     if: needs.check.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -130,5 +142,15 @@ jobs:
       - name: Publish Release
         run: |
           VERSION="v${{ needs.check.outputs.version }}"
-          gh release edit "$VERSION" --notes-file release_notes.md --draft=false
-          echo "Release $VERSION 已发布"
+          # 查找 draft Release ID，编辑发布
+          RELEASE_ID=$(gh api "repos/$GITHUB_REPOSITORY/releases" --jq \
+            '.[] | select(.tag_name=="'"$VERSION"'" and .draft) | .id' | head -1)
+          if [ -n "$RELEASE_ID" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -X PATCH \
+              -f draft=false \
+              -F body="$(cat release_notes.md)" > /dev/null
+            echo "Release $VERSION 已发布"
+          else
+            echo "错误：未找到 draft Release $VERSION"
+            exit 1
+          fi
