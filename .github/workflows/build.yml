@@ -1,8 +1,8 @@
 name: Build and Release
 
 # 推送到 main 后自动构建；若 version.py 的版本号对应的 tag 尚不存在，
-# 则自动创建 Release（softprops/action-gh-release 会自动建 tag）。
-# 普通提交（版本号未变）不会重复发版。
+# 则自动创建 Release。直接通过 gh release 上传构建产物，
+# 不经过 actions/upload-artifact（避开 artifact 存储配额）。
 on:
   push:
     branches: [ main ]
@@ -10,6 +10,9 @@ on:
 
 permissions:
   contents: write          # 创建 Release / tag 必须
+
+env:
+  GH_TOKEN: ${{ github.token }}
 
 jobs:
   # ── 版本检查：决定本次是否要发版 ──────────────────
@@ -67,12 +70,15 @@ jobs:
         run: |
           Compress-Archive -Path "dist/BankFlowAnalyzer/*" -DestinationPath BankFlowAnalyzer-windows-x64.zip
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-build
-          path: BankFlowAnalyzer-windows-x64.zip
-          retention-days: 1
+      # 直接上传到 Release（跳过 upload-artifact，避免配额限制）
+      - name: Upload to Release
+        shell: bash
+        run: |
+          FILE="BankFlowAnalyzer-windows-x64.zip"
+          VERSION="v${{ needs.check.outputs.version }}"
+          # 先尝试创建 Release（draft），已存在则直接上传文件
+          gh release create "$VERSION" "$FILE" --draft --notes "" --target "$GITHUB_SHA" 2>/dev/null || \
+            gh release upload "$VERSION" "$FILE" --clobber
 
   # ── macOS 构建 ────────────────────────────────────
   build-macos:
@@ -101,14 +107,16 @@ jobs:
         run: |
           hdiutil create -volname BankFlowAnalyzer -srcfolder "dist/BankFlowAnalyzer.app" -ov -format UDZO BankFlowAnalyzer-macos.dmg
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-build
-          path: BankFlowAnalyzer-macos.dmg
-          retention-days: 1
+      # 直接上传到 Release（跳过 upload-artifact，避免配额限制）
+      - name: Upload to Release
+        run: |
+          FILE="BankFlowAnalyzer-macos.dmg"
+          VERSION="v${{ needs.check.outputs.version }}"
+          # 先尝试创建 Release（draft），已存在则直接上传文件
+          gh release create "$VERSION" "$FILE" --draft --notes "" --target "$GITHUB_SHA" 2>/dev/null || \
+            gh release upload "$VERSION" "$FILE" --clobber
 
-  # ── 发布 Release（自动建 tag）─────────────────────
+  # ── 发布 Release（从 draft 转为正式，写入发布说明）──
   release:
     needs: [check, build-windows, build-macos]
     if: needs.check.outputs.should_release == 'true'
@@ -116,27 +124,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download Windows build
-        uses: actions/download-artifact@v4
-        with:
-          name: windows-build
-
-      - name: Download macOS build
-        uses: actions/download-artifact@v4
-        with:
-          name: macos-build
-
       - name: 从 CHANGELOG 提取本版本发布说明
         run: awk '/^## \[/{c++} c==1' CHANGELOG.md > release_notes.md
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ needs.check.outputs.version }}   # tag 不存在会自动建
-          name: v${{ needs.check.outputs.version }}
-          body_path: release_notes.md
-          files: |
-            BankFlowAnalyzer-windows-x64.zip
-            BankFlowAnalyzer-macos.dmg
-          draft: false
-          prerelease: false
+      - name: Publish Release
+        run: |
+          VERSION="v${{ needs.check.outputs.version }}"
+          gh release edit "$VERSION" --notes-file release_notes.md --draft=false
+          echo "Release $VERSION 已发布"
