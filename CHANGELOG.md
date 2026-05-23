@@ -1,5 +1,29 @@
 # Changelog
 
+## [5.0.1] - 2026-05-21
+
+### CI 修复（无代码变更，仅重发版以补齐 Windows 包）
+
+v5.0.0 发版时 workflow 还是旧版本（早于 CI 竞态修复 4 分钟），
+Release 只产出了 macOS dmg 没有 Windows zip。本版本代码与 v5.0.0
+完全等价，仅触发新 workflow 重新构建以提供 Windows 安装包。
+
+期间 CI 已经做了 3 处加固（见 main 提交历史）：
+- `0569ace` 设置 artifact 保留期 1 天，防止存储配额超限
+- `4964633` 移除 actions/upload-artifact，改用 `gh release upload`
+  直接上传到 draft Release，绕过 artifact 存储配额
+- `9f3b09d` 新增 create-release 中间 job，确保 Release tag 先创建，
+  Windows / macOS 两个并行构建作业再各自上传，避免竞态
+
+发版流程现在的稳定形态：
+```
+push main → check → create-release(draft)
+                        ├→ build-windows → upload to draft
+                        └→ build-macos → upload to draft
+                                              ↓
+                                    publish (draft → official)
+```
+
 ## [5.0.0] - 2026-05-19
 
 ### 重大新增（ROADMAP D 组 — D2 N 跳资金链追踪 ⭐）
