@@ -54,14 +54,17 @@ jobs:
       - name: Create draft Release
         run: |
           VERSION="v${{ needs.check.outputs.version }}"
-          # 仅创建空的 draft Release（不含文件），确保 tag 先就位
-          gh release create "$VERSION" --draft --notes "" --target "$GITHUB_SHA" || \
-            echo "Release 已存在，直接复用"
-          echo "draft Release $VERSION 已就绪"
+          # 先查是否已有该 tag 的 Release（含 draft），有则复用，没有才创建
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION 已存在，直接复用"
+          else
+            gh release create "$VERSION" --draft --notes "" --target "$GITHUB_SHA"
+            echo "draft Release $VERSION 已创建"
+          fi
 
   # ── Windows 构建 ──────────────────────────────────
   build-windows:
-    needs: create-release
+    needs: [check, create-release]
     if: needs.check.outputs.should_release == 'true'
     runs-on: windows-latest
     steps:
@@ -96,7 +99,7 @@ jobs:
 
   # ── macOS 构建 ────────────────────────────────────
   build-macos:
-    needs: create-release
+    needs: [check, create-release]
     if: needs.check.outputs.should_release == 'true'
     runs-on: macos-latest
     steps:
@@ -130,7 +133,7 @@ jobs:
 
   # ── 发布 Release（从 draft 转为正式，写入发布说明）──
   release:
-    needs: [create-release, build-windows, build-macos]
+    needs: [check, create-release, build-windows, build-macos]
     if: needs.check.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
