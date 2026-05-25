@@ -33,6 +33,8 @@ class LeftPanel(QWidget):
     # 多银行合并 (B1): 加入分析池 / 清空池
     add_to_pool_requested = Signal()
     clear_pool_requested = Signal()
+    # 数据清洗合并导出 (v5.1)
+    merged_export_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -70,6 +72,15 @@ class LeftPanel(QWidget):
         self.lbl_pool = QLabel("分析池: 空")
         self.lbl_pool.setStyleSheet("font-size:11px; color:#666;")
         f.addWidget(self.lbl_pool)
+        # v5.1 数据清洗合并导出（不需要先运行分析）
+        self.btn_merged_export = QPushButton("🧹 清洗合并导出 (xlsx)")
+        self.btn_merged_export.setToolTip(
+            "把分析池里所有银行的流水按统一格式合并、按时间排序，导出 xlsx\n"
+            "不需要先运行分析；适合做数据预处理或交给其他工具")
+        self.btn_merged_export.setEnabled(False)
+        self.btn_merged_export.clicked.connect(
+            lambda: self.merged_export_requested.emit())
+        f.addWidget(self.btn_merged_export)
         self.btn_export = QPushButton("💾 导出结果 (xlsx)")
         self.btn_export.setEnabled(False)
         f.addWidget(self.btn_export)
@@ -198,6 +209,7 @@ class LeftPanel(QWidget):
         self._auto_map(self._df)
         self.btn_run.setEnabled(True)
         self.btn_add_pool.setEnabled(True)
+        self.btn_merged_export.setEnabled(True)
         self.data_loaded.emit(self._df, path)
 
     def _auto_map(self, df):
@@ -280,6 +292,9 @@ class LeftPanel(QWidget):
             self.lbl_pool.setText(
                 f"分析池: {file_count} 个文件, {txn_count:,} 笔  [{preview}]")
         self.btn_clear_pool.setEnabled(file_count > 0)
+        # 池非空时也启用清洗导出（即使当前 df 已被加入池后清空）
+        if file_count > 0:
+            self.btn_merged_export.setEnabled(True)
 
     # ── 跨软件联动 (G 组) ─────────────────────────────
     def _on_interop_import(self):
