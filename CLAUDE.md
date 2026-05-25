@@ -31,6 +31,7 @@
 | `interop.py`（任何函数 / `SCHEMA_ID`） | `docs/INTEROP_SPEC.md` + `docs/DESIGN_DECISIONS.md#跨软件联动` |
 | `audit.AuditLogger` | `docs/DESIGN_DECISIONS.md#审计日志c3` |
 | `trace_fund_chains` | `docs/DESIGN_DECISIONS.md#n-跳资金链追踪d2` |
+| `cleanup.py` `MERGED_COLUMNS` | 对外契约——只增不改、不调序 |
 
 ## 八条铁律（违反等于回归）
 

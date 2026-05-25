@@ -24,6 +24,7 @@ from interop import (
     analyze_transfer_call_correlation, analyze_relationship_strength,
 )
 from audit import AuditLogger
+from cleanup import transactions_to_rows, MERGED_COLUMNS
 from ui.theme_manager import ThemeManager
 from ui.parsers import parse_amount, parse_date, resolve_direction
 from ui.widgets.left_panel import LeftPanel
@@ -82,6 +83,7 @@ class MainWindow(QMainWindow):
         self._left.audit_export_requested.connect(self._on_export_audit)
         self._left.add_to_pool_requested.connect(self._on_add_to_pool)
         self._left.clear_pool_requested.connect(self._on_clear_pool)
+        self._left.merged_export_requested.connect(self._on_export_merged)
         root.addWidget(self._left)
 
         # 右侧 — 包裹在 ScrollArea 中支持横向滚动
@@ -613,6 +615,48 @@ class MainWindow(QMainWindow):
         names = [s[0] for s in self._pool_sources]
         self._left.set_pool_status(
             len(self._pool_sources), len(self._pool_txs), names)
+
+    # ═══ 数据清洗合并导出 (v5.1) ═════════════════════════
+
+    def _on_export_merged(self):
+        """把分析池 + 当前导入的流水统一格式合并导出 xlsx（不需要先运行分析）"""
+        # 收集所有交易：池 + 当前 df（用左侧面板当前映射）
+        all_txs: List[Transaction] = list(self._pool_txs)
+        if self._df is not None:
+            mappings = {key: cmb.currentText()
+                        for key, cmb in self._left._mapping_cmbs.items()}
+            required = ["date", "card", "type", "amount"]
+            if all(mappings[k] for k in required):
+                params = {"skip_small": self._left.chk_small.isChecked()}
+                all_txs.extend(self._build_transactions_from_df(
+                    self._df, mappings, params,
+                    source=os.path.basename(self._current_file)))
+
+        if not all_txs:
+            QMessageBox.information(self, "提示",
+                "没有交易可导出。请先导入流水（可多次「加入分析池」累加多家银行）")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出统一格式合并流水表",
+            "合并流水_统一格式.xlsx", "Excel (*.xlsx)")
+        if not path:
+            return
+
+        try:
+            rows = transactions_to_rows(all_txs)
+            df = pd.DataFrame(rows, columns=MERGED_COLUMNS)
+            df.to_excel(path, sheet_name="合并流水", index=False)
+            self._status.showMessage(
+                f"清洗合并导出: {path} | {len(rows):,} 笔 "
+                f"({len({r['数据来源'] for r in rows})} 个来源)")
+            self._audit.log("merged_export",
+                            path=os.path.basename(path),
+                            rows=len(rows),
+                            sources=sorted({r["数据来源"] for r in rows
+                                            if r["数据来源"]}))
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
 
     # ═══ 审计日志 (C3) ═══════════════════════════════════
 

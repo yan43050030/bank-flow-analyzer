@@ -19,6 +19,7 @@ from interop import (
     analyze_transfer_call_correlation, analyze_relationship_strength,
 )
 from audit import AuditLogger
+from cleanup import transactions_to_rows, MERGED_COLUMNS
 
 
 def make_tx(date_str, card, raw_type, amount, name="测试", cp="", rmk=""):
@@ -924,6 +925,73 @@ def test_scenario_48_fund_chain_in_analyze_bank_flow():
     print("✅ 测试48通过")
 
 
+def test_scenario_49_cleanup_unified_schema():
+    """v5.1 数据清洗：不同源 Transaction 输出统一列、按时间排序、金额带符号"""
+    print("\n" + "=" * 60)
+    print("测试49: 数据清洗合并统一格式（v5.1）")
+    print("=" * 60)
+
+    # 模拟两家银行 + 时间无序输入
+    txs = [
+        Transaction(date=datetime(2024, 3, 5, 14, 0), card="建行卡6217",
+                    name="嫌疑人", raw_type="转账", amount=-30000,
+                    counterparty="李四", counterparty_phone="13900001111",
+                    holder_id_card="110101199001011234",
+                    source="建行流水.csv"),
+        Transaction(date=datetime(2024, 1, 1, 10, 0), card="工行卡6222",
+                    name="嫌疑人", raw_type="工资", amount=50000,
+                    counterparty="某某公司",
+                    holder_id_card="110101199001011234",
+                    source="工行流水.xlsx"),
+        Transaction(date=datetime(2024, 2, 1, 9, 0), card="工行卡6222",
+                    name="嫌疑人", raw_type="消费", amount=-2000,
+                    counterparty="美团", channel="支付宝",
+                    holder_id_card="110101199001011234",
+                    source="工行流水.xlsx"),
+    ]
+    rows = transactions_to_rows(txs)
+    print(f"输入 {len(txs)} 笔 → 输出 {len(rows)} 行")
+    for r in rows:
+        print(f"  {r['日期']} {r['卡号']:12s} 金额{r['金额']:>10} "
+              f"对手={r['对手姓名']:8s} 来源={r['数据来源']}")
+
+    # 列一致：与 MERGED_COLUMNS 同序、同名
+    assert list(rows[0].keys()) == MERGED_COLUMNS, \
+        f"列结构应与 MERGED_COLUMNS 一致: {list(rows[0].keys())}"
+    # 按时间升序
+    dates = [r["日期"] for r in rows]
+    assert dates == sorted(dates), f"应按时间升序: {dates}"
+    # 金额带符号
+    assert rows[0]["金额"] == 50000, "工资正数"
+    assert rows[1]["金额"] == -2000, "消费负数"
+    assert rows[2]["金额"] == -30000
+    # 数据来源保留
+    sources = {r["数据来源"] for r in rows}
+    assert sources == {"工行流水.xlsx", "建行流水.csv"}
+    # 身份证保留（跨多源同一人）
+    ids = {r["持卡人身份证"] for r in rows}
+    assert ids == {"110101199001011234"}
+    print("✅ 测试49通过")
+
+
+def test_scenario_50_cleanup_empty_fields():
+    """v5.1 数据清洗：缺失字段统一填空串，不产生 None / NaN"""
+    print("\n" + "=" * 60)
+    print("测试50: 缺失字段处理（v5.1）")
+    print("=" * 60)
+
+    # 极简交易，只有必填字段
+    txs = [Transaction(date=datetime(2024, 1, 1), card="6222",
+                       name="某甲", raw_type="存款", amount=10000)]
+    rows = transactions_to_rows(txs)
+    r = rows[0]
+    # 所有缺失字段应是空串而非 None
+    for col in ["持卡人身份证", "对手姓名", "对手账号", "对手手机号",
+                "对手身份证", "渠道", "备注", "数据来源"]:
+        assert r[col] == "", f"{col} 应为空串而非 {r[col]!r}"
+    print("✅ 测试50通过")
+
+
 def test_scenario_44_multibank_merge():
     """B1: 多家银行流水合并分析 — 同一人不同银行的卡能聚合"""
     print("\n" + "=" * 60)
@@ -1371,5 +1439,7 @@ if __name__ == "__main__":
     test_scenario_46_fund_chain_window_filter()
     test_scenario_47_fund_chain_similarity_filter()
     test_scenario_48_fund_chain_in_analyze_bank_flow()
+    test_scenario_49_cleanup_unified_schema()
+    test_scenario_50_cleanup_empty_fields()
     print("\n" + "=" * 60)
     print("🎉 所有测试完成")
