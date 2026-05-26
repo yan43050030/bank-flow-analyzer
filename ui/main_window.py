@@ -9,7 +9,7 @@ import pandas as pd
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QComboBox, QLabel, QTabWidget, QStatusBar, QFileDialog, QMessageBox,
-    QScrollArea, QSizePolicy,
+    QScrollArea, QSizePolicy, QSplitter,
 )
 from PySide6.QtCore import Qt
 
@@ -66,13 +66,21 @@ class MainWindow(QMainWindow):
     # ═══ UI 骨架 ═══════════════════════════════════════
 
     def _init_ui(self):
+        # 整体最小尺寸：保证缩窗后左右两侧仍可用，再缩就出滚动条
+        self.setMinimumSize(960, 540)
+
         central = QWidget()
         self.setCentralWidget(central)
         root = QHBoxLayout(central)
-        root.setSpacing(10)
-        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(4)
+        root.setContentsMargins(6, 6, 6, 6)
 
-        # 左侧面板
+        # 左/右用 QSplitter 替代固定 QHBoxLayout，允许用户拖动调整宽度
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        root.addWidget(splitter)
+
+        # 左侧面板（内部已自带 QScrollArea，高度不够时纵向滚动）
         self._left = LeftPanel()
         self._left.data_loaded.connect(self._on_data_loaded)
         self._left.run_requested.connect(self._on_run_requested)
@@ -84,18 +92,19 @@ class MainWindow(QMainWindow):
         self._left.add_to_pool_requested.connect(self._on_add_to_pool)
         self._left.clear_pool_requested.connect(self._on_clear_pool)
         self._left.merged_export_requested.connect(self._on_export_merged)
-        root.addWidget(self._left)
+        splitter.addWidget(self._left)
 
-        # 右侧 — 包裹在 ScrollArea 中支持横向滚动
+        # 右侧 — 包裹在 ScrollArea 中支持横向和纵向滚动
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         right = QWidget()
-        right.setMinimumWidth(700)
+        right.setMinimumWidth(620)
         rv = QVBoxLayout(right)
-        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setContentsMargins(2, 2, 2, 2)
         rv.setSpacing(6)
 
         # 顶部栏：资金量 + 主题
@@ -121,7 +130,12 @@ class MainWindow(QMainWindow):
         rv.addWidget(self._tabs, stretch=1)
 
         scroll.setWidget(right)
-        root.addWidget(scroll, stretch=1)
+        splitter.addWidget(scroll)
+
+        # 初始分配 + 拉伸策略：左侧固定宽度倾向，右侧吸收剩余空间
+        splitter.setSizes([380, 1220])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
 
         # 状态栏
         self._status = QStatusBar()

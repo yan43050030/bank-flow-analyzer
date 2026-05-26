@@ -10,8 +10,9 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QPushButton, QComboBox, QLabel, QGroupBox,
     QCheckBox, QSpinBox, QFileDialog, QMessageBox, QInputDialog,
+    QScrollArea,
 )
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt
 
 from ui.parsers import smart_read_csv, smart_read_excel, SheetChoiceError
 
@@ -40,12 +41,29 @@ class LeftPanel(QWidget):
         super().__init__(parent)
         self._df: Optional[pd.DataFrame] = None
         self._current_file: str = ""
-        self.setFixedWidth(380)
+        # 不锁死宽度，让 QSplitter 控制；只保留合理的最小宽度
+        self.setMinimumWidth(300)
+        self.setMaximumWidth(560)
         self._init_ui()
 
     def _init_ui(self):
-        lv = QVBoxLayout(self)
-        lv.setContentsMargins(0, 0, 0, 0)
+        # 外层只放 QScrollArea —— 内部内容如超出可视区域则纵向滚动
+        # 避免窗口缩小时控件被挤压、字段映射等无法操作的问题
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        outer.addWidget(scroll)
+
+        # 真正的内容容器（所有控件都加到这个容器的布局里）
+        content = QWidget()
+        scroll.setWidget(content)
+        lv = QVBoxLayout(content)
+        lv.setContentsMargins(4, 4, 4, 4)
 
         # ── 文件操作 ──
         g1 = QGroupBox("文件操作")
